@@ -4,17 +4,19 @@ import QRCode from "qrcode";
 // =====================
 // Firebase (cloud sync)
 // =====================
-// Your Firebase web config. Cloud sync is ON when you use a room code.
-const FIREBASE_CONFIG = {
-  apiKey: "AIzaSyBcWTH6h_xDqfxAUYPHm8mXNNb-vMAWgNM",
-  authDomain: "betting-terminal.firebaseapp.com",
-  projectId: "betting-terminal",
-  storageBucket: "betting-terminal.firebasestorage.app",
-  messagingSenderId: "132647014088",
-  appId: "1:132647014088:web:f3b6f23cce3cc3849d9ffd",
-};
+// Paste your Firebase web config into FIREBASE_CONFIG to enable multi-phone sync.
+// If FIREBASE_CONFIG stays null, the app works in LOCAL mode only (each device is separate).
+const FIREBASE_CONFIG = null;
+// Example:
+// const FIREBASE_CONFIG = {
+//   apiKey: "...",
+//   authDomain: "...",
+//   projectId: "...",
+//   storageBucket: "...",
+//   messagingSenderId: "...",
+//   appId: "...",
+// };
 
-// These start as null on purpose. They get set inside ensureFirebase().
 let firebaseApp = null;
 let firestore = null;
 let onSnapshotFn = null;
@@ -69,98 +71,11 @@ const PUBLIC_BOARDS = [
   { key: "SUPERFECTA", label: "Superfecta Board" },
 ];
 
-// TV theme presets (background + text + accent)
-const TV_THEMES = [
-  {
-    key: "DEFAULT",
-    name: "Default (Light)",
-    bg: "#FFFFFF",
-    text: "#111827",
-    muted: "#6B7280",
-    accent: "#111827",
-    border: "#E5E7EB",
-  },
-  {
-    key: "TAMU_MAROON",
-    name: "Texas A&M (Maroon)",
-    bg: "#500000",
-    text: "#FFFFFF",
-    muted: "rgba(255,255,255,0.85)",
-    accent: "#FFFFFF",
-    border: "rgba(255,255,255,0.22)",
-  },
-  {
-    key: "TAMU_LIGHT",
-    name: "Texas A&M (Light)",
-    bg: "#FFFFFF",
-    text: "#500000",
-    muted: "#6B7280",
-    accent: "#500000",
-    border: "#E5E7EB",
-  },
-  {
-    key: "XMAS_CLASSIC",
-    name: "Christmas (Classic)",
-    bg: "#0B3D2E",
-    text: "#FFFFFF",
-    muted: "rgba(255,255,255,0.85)",
-    accent: "#D62828",
-    border: "rgba(255,255,255,0.22)",
-  },
-  {
-    key: "XMAS_RED",
-    name: "Christmas (Red)",
-    bg: "#B91C1C",
-    text: "#FFFFFF",
-    muted: "rgba(255,255,255,0.85)",
-    accent: "#14532D",
-    border: "rgba(255,255,255,0.22)",
-  },
-  {
-    key: "MARDI_GRAS",
-    name: "Mardi Gras",
-    bg: "#2E1065",
-    text: "#FFFFFF",
-    muted: "rgba(255,255,255,0.85)",
-    accent: "#FBBF24",
-    border: "rgba(255,255,255,0.22)",
-  },
-  {
-    key: "HALLOWEEN",
-    name: "Halloween",
-    bg: "#111827",
-    text: "#FBBF24",
-    muted: "#D1D5DB",
-    accent: "#F97316",
-    border: "rgba(251,191,36,0.30)",
-  },
-  {
-    key: "USA",
-    name: "4th of July",
-    bg: "#0B1F3A",
-    text: "#FFFFFF",
-    muted: "rgba(255,255,255,0.85)",
-    accent: "#DC2626",
-    border: "rgba(255,255,255,0.22)",
-  },
-  {
-    key: "VALENTINE",
-    name: "Valentine’s",
-    bg: "#FFF1F2",
-    text: "#9F1239",
-    muted: "#6B7280",
-    accent: "#BE123C",
-    border: "#FBCFE8",
-  },
-];
-
-function themeByKey(key) {
-  return TV_THEMES.find((t) => t.key === key) ?? TV_THEMES[0];
-}
-
 function csvEscape(v) {
   const s = String(v ?? "");
-  if (/[\n\r,"]/g.test(s)) return `"${s.replace(/"/g, '""')}"`;
+  if (/[
+
+,"]/g.test(s)) return `"${s.replace(/"/g, '""')}"`;
   return s;
 }
 
@@ -203,10 +118,7 @@ export default function BettingTerminal() {
   const [mode, setMode] = useState("TERMINAL");
 
   const [baseUrl, setBaseUrl] = useState("");
-  const [qrDataUrl, setQrDataUrl] = useState("");
-
-  // iPad input focus stability
-  const addNameRef = useRef(null);
+  const qrCanvasRef = useRef(null);
 
   // Kiosk mode hides mode switching on-screen
   const [kioskMode, setKioskMode] = useState(false);
@@ -219,14 +131,8 @@ export default function BettingTerminal() {
   const [roomCode, setRoomCode] = useState("");
   const [roomInput, setRoomInput] = useState("");
 
-  // Optional terminal/TV graphic
-  const [terminalGraphic, setTerminalGraphic] = useState(null); // data URL string
-
-  // TV theme
-  const [tvThemeKey, setTvThemeKey] = useState("DEFAULT");
-
   // Local persistence
-  const STORAGE_KEY = "betting-terminal-state-v8";
+  const STORAGE_KEY = "betting-terminal-state-v4";
   const loadState = () => {
     try {
       const raw = localStorage.getItem(STORAGE_KEY);
@@ -288,9 +194,6 @@ export default function BettingTerminal() {
         setRoomCode(rc);
         setRoomInput(rc);
       }
-
-      const qTheme = params.get("theme");
-      if (qTheme) setTvThemeKey(String(qTheme).toUpperCase());
     } catch {
       // ignore
     }
@@ -304,18 +207,12 @@ export default function BettingTerminal() {
     }
   }, []);
 
-  // restore persisted extras
-  useEffect(() => {
-    if (persisted?.terminalGraphic) setTerminalGraphic(persisted.terminalGraphic);
-    if (persisted?.tvThemeKey) setTvThemeKey(persisted.tvThemeKey);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
   // Firebase readiness
   useEffect(() => {
     (async () => {
       const ok = await ensureFirebase();
       setCloudReady(ok);
+      // If someone loads with ?room=... and firebase is available, auto-enable CLOUD.
       if (ok) {
         try {
           const params = new URLSearchParams(window.location.search);
@@ -340,24 +237,13 @@ export default function BettingTerminal() {
   const tvUrl = useMemo(() => {
     if (!baseUrl) return "";
     const roomPart = roomCode ? `&room=${encodeURIComponent(roomCode)}` : "";
-    const themePart = tvThemeKey ? `&theme=${encodeURIComponent(tvThemeKey)}` : "";
-    return `${baseUrl}?mode=TV${roomPart}${themePart}`;
-  }, [baseUrl, roomCode, tvThemeKey]);
+    return `${baseUrl}?mode=TV${roomPart}`;
+  }, [baseUrl, roomCode]);
 
-  // QR via DataURL (more reliable than canvas on iOS)
   useEffect(() => {
-    (async () => {
-      if (!bettorUrl) {
-        setQrDataUrl("");
-        return;
-      }
-      try {
-        const dataUrl = await QRCode.toDataURL(bettorUrl, { width: 220, margin: 1 });
-        setQrDataUrl(dataUrl);
-      } catch {
-        setQrDataUrl("");
-      }
-    })();
+    const canvas = qrCanvasRef.current;
+    if (!canvas || !bettorUrl) return;
+    QRCode.toCanvas(canvas, bettorUrl, { width: 220, margin: 1 }).catch(() => {});
   }, [bettorUrl]);
 
   // -----------------
@@ -379,8 +265,6 @@ export default function BettingTerminal() {
         boardKey,
         autoRotate,
         kioskMode,
-        terminalGraphic,
-        tvThemeKey,
       };
       localStorage.setItem(STORAGE_KEY, JSON.stringify(snapshot));
     } catch {
@@ -400,8 +284,6 @@ export default function BettingTerminal() {
     boardKey,
     autoRotate,
     kioskMode,
-    terminalGraphic,
-    tvThemeKey,
   ]);
 
   // -----------------
@@ -426,8 +308,6 @@ export default function BettingTerminal() {
         setEnforceMaxBet(data.enforceMaxBet ?? true);
         setMaxBet(Number(data.maxBet ?? 10));
         setResults(data.results ?? { first: "", second: "", third: "", fourth: "" });
-        setTerminalGraphic(data.terminalGraphic ?? null);
-        setTvThemeKey(data.tvThemeKey ?? "DEFAULT");
       });
 
       const betsRef = collectionFn(firestore, "rooms", roomCode, "bets");
@@ -457,8 +337,6 @@ export default function BettingTerminal() {
           enforceMaxBet,
           maxBet: Number(maxBet),
           results,
-          terminalGraphic: terminalGraphic ?? null,
-          tvThemeKey: tvThemeKey ?? "DEFAULT",
           updatedAt: serverTimestampFn(),
         },
         { merge: true }
@@ -604,14 +482,14 @@ export default function BettingTerminal() {
     setParticipants(next);
     setNameInput("");
 
-    // FIX: keep focus stable on iPad Safari typing
-    setTimeout(() => {
+    // keep focus in input
+    requestAnimationFrame(() => {
       try {
-        addNameRef.current?.focus();
+        document.getElementById("addNameInput")?.focus();
       } catch {
         // ignore
       }
-    }, 0);
+    });
 
     if (!bettor) setBettor(trimmed);
 
@@ -673,11 +551,6 @@ export default function BettingTerminal() {
     if (syncMode === "CLOUD") await pushRoomUpdate({ enforceMaxBet: nextEnforce, maxBet: nextMax });
   };
 
-  const setTvTheme = async (key) => {
-    setTvThemeKey(key);
-    if (syncMode === "CLOUD") await pushRoomUpdate({ tvThemeKey: key });
-  };
-
   const newRace = async () => {
     // LOCAL: wipe
     if (syncMode !== "CLOUD") {
@@ -707,8 +580,6 @@ export default function BettingTerminal() {
       participants,
       raceLocked: false,
       results: { first: "", second: "", third: "", fourth: "" },
-      terminalGraphic: terminalGraphic ?? null,
-      tvThemeKey: tvThemeKey ?? "DEFAULT",
     });
   };
 
@@ -735,8 +606,8 @@ export default function BettingTerminal() {
       lines.push([b.createdAt, b.bettor, b.betType, (b.picks || []).join(" > "), Number(b.amount).toFixed(2)].map(csvEscape).join(","));
     }
 
-    // FIXED: correct newline join
-    const blob = new Blob([lines.join("\n")], { type: "text/csv;charset=utf-8" });
+    const blob = new Blob([lines.join("
+")], { type: "text/csv;charset=utf-8" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
@@ -745,24 +616,6 @@ export default function BettingTerminal() {
     a.click();
     a.remove();
     URL.revokeObjectURL(url);
-  };
-
-  const onUploadGraphic = async (file) => {
-    if (!file) return;
-    if (!file.type.startsWith("image/")) return;
-
-    const reader = new FileReader();
-    reader.onload = async () => {
-      const dataUrl = String(reader.result || "");
-      setTerminalGraphic(dataUrl);
-      if (syncMode === "CLOUD") await pushRoomUpdate({ terminalGraphic: dataUrl });
-    };
-    reader.readAsDataURL(file);
-  };
-
-  const clearGraphic = async () => {
-    setTerminalGraphic(null);
-    if (syncMode === "CLOUD") await pushRoomUpdate({ terminalGraphic: null });
   };
 
   // TV auto rotate
@@ -807,8 +660,6 @@ export default function BettingTerminal() {
     if (!payoutPerDollar || payoutPerDollar <= 0) return "-";
     return `$${(payoutPerDollar * 0.1).toFixed(2)} per $0.10`;
   };
-
-  const theme = themeByKey(tvThemeKey);
 
   const Header = () => (
     <div className="flex items-start justify-between gap-3">
@@ -868,7 +719,7 @@ export default function BettingTerminal() {
 
         {!cloudReady ? (
           <div className="text-sm text-gray-700">
-            Cloud sync not ready. Confirm package.json includes firebase, then redeploy.
+            Cloud sync is OFF. To sync phones, paste Firebase config into FIREBASE_CONFIG and add firebase dependency.
           </div>
         ) : null}
 
@@ -893,7 +744,6 @@ export default function BettingTerminal() {
             inputMode="text"
             autoCapitalize="characters"
             autoCorrect="off"
-            autoComplete="off"
           />
 
           <button
@@ -904,7 +754,7 @@ export default function BettingTerminal() {
               if (cloudReady) setSyncMode("CLOUD");
             }}
             disabled={!roomInput || !cloudReady}
-            title={!cloudReady ? "Cloud not ready" : ""}
+            title={!cloudReady ? "Enable Firebase first" : ""}
           >
             Use room
           </button>
@@ -921,54 +771,12 @@ export default function BettingTerminal() {
           </button>
         </div>
 
-        <div className="rounded-2xl border p-3 space-y-2">
-          <div className="text-sm font-semibold">TV theme</div>
-          <select className={smallSelect} value={tvThemeKey} onChange={(e) => setTvTheme(e.target.value)}>
-            {TV_THEMES.map((t) => (
-              <option key={t.key} value={t.key}>
-                {t.name}
-              </option>
-            ))}
-          </select>
-          <div className="text-xs text-gray-600">
-            TV link includes theme: {tvThemeKey}
-          </div>
-        </div>
-
-        <div className="rounded-2xl border p-3 space-y-2">
-          <div className="font-semibold text-sm">Terminal / TV graphic</div>
-          <div className="text-xs text-gray-600">
-            Upload a logo or graphic shown on Terminal and TV.
-          </div>
-
-          <input type="file" accept="image/*" onChange={(e) => onUploadGraphic(e.target.files?.[0])} className="text-sm" />
-
-          {terminalGraphic ? (
-            <div className="space-y-2">
-              <img
-                src={terminalGraphic}
-                alt="Terminal graphic"
-                className="max-h-40 rounded-2xl border object-contain w-full"
-              />
-              <button onClick={clearGraphic} className={buttonSecondary}>
-                Remove graphic
-              </button>
-            </div>
-          ) : (
-            <div className="text-xs text-gray-600">No graphic uploaded yet.</div>
-          )}
-        </div>
-
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 items-start">
           <div className="space-y-2">
             <div className="text-sm font-semibold">Bettor QR</div>
             <div className="text-xs text-gray-600 break-all">{bettorUrl || "(loading...)"}</div>
-            {qrDataUrl ? (
-              <img src={qrDataUrl} alt="Bettor QR" className="border rounded-2xl w-[220px] h-[220px]" />
-            ) : (
-              <div className="text-xs text-red-600">QR not ready - confirm qrcode dependency is installed.</div>
-            )}
-            <div className="text-xs text-gray-600">Guests must open the QR link with the same room code.</div>
+            <canvas ref={qrCanvasRef} className="border rounded-2xl" />
+            <div className="text-xs text-gray-600">Guests scan this to bet (must include the same room).</div>
           </div>
           <div className="space-y-2">
             <div className="text-sm font-semibold">TV link</div>
@@ -992,21 +800,18 @@ export default function BettingTerminal() {
 
         <div className="flex flex-col sm:flex-row gap-2">
           <input
-            ref={addNameRef}
+            id="addNameInput"
             value={nameInput}
             onChange={(e) => setNameInput(e.target.value)}
             placeholder="Add name"
             className={smallInput}
             autoCorrect="off"
             autoCapitalize="words"
-            autoComplete="off"
             onKeyDown={(e) => {
               if (e.key === "Enter") addParticipant();
             }}
           />
-          <button onClick={addParticipant} className={buttonPrimary}>
-            Add
-          </button>
+          <button onClick={addParticipant} className={buttonPrimary}>Add</button>
         </div>
 
         <div className="flex flex-wrap gap-2">
@@ -1014,9 +819,7 @@ export default function BettingTerminal() {
             <div className="text-sm text-gray-600">Add at least 2 participants.</div>
           ) : (
             participants.map((p) => (
-              <span key={p} className="px-3 py-1 rounded-full border text-sm">
-                {p}
-              </span>
+              <span key={p} className="px-3 py-1 rounded-full border text-sm">{p}</span>
             ))
           )}
         </div>
@@ -1038,15 +841,8 @@ export default function BettingTerminal() {
           <div className="rounded-2xl border p-3 text-sm text-gray-700">
             <div className="font-semibold">Live race info</div>
             <div className="mt-1">Participants: {participants.length ? participants.join(", ") : "(none yet)"}</div>
-            <div className="mt-1">
-              Win pool: ${(poolsTotals.WIN ?? 0).toFixed(2)} | Place: ${(poolsTotals.PLACE ?? 0).toFixed(2)} | Show: ${(poolsTotals.SHOW ?? 0).toFixed(2)}
-            </div>
-            <div className="mt-1">Room: {roomCode || "(local)"} | Sync: {syncMode}</div>
-            {roomCode && syncMode !== "CLOUD" ? (
-              <div className="mt-1 text-xs text-red-600">
-                This phone is not in Cloud mode. Make sure the URL includes &room=CODE.
-              </div>
-            ) : null}
+            <div className="mt-1">Win pool: ${(poolsTotals.WIN ?? 0).toFixed(2)} | Place: ${(poolsTotals.PLACE ?? 0).toFixed(2)} | Show: ${(poolsTotals.SHOW ?? 0).toFixed(2)}</div>
+            <div className="mt-1">Room: {roomCode || "(local)"}</div>
           </div>
         ) : null}
 
@@ -1055,7 +851,11 @@ export default function BettingTerminal() {
             <div className="font-semibold">Limits</div>
             <div className="flex flex-col sm:flex-row gap-2 sm:items-center">
               <label className="flex items-center gap-2 text-sm">
-                <input type="checkbox" checked={enforceMaxBet} onChange={(e) => updateMaxBet({ enforceMaxBet: e.target.checked })} />
+                <input
+                  type="checkbox"
+                  checked={enforceMaxBet}
+                  onChange={(e) => updateMaxBet({ enforceMaxBet: e.target.checked })}
+                />
                 Enforce max bet
               </label>
               <div className="flex items-center gap-2">
@@ -1079,9 +879,7 @@ export default function BettingTerminal() {
             <select className={smallSelect} value={bettor} onChange={(e) => setBettor(e.target.value)} disabled={raceLocked}>
               <option value="">Select</option>
               {participants.map((p) => (
-                <option key={p} value={p}>
-                  {p}
-                </option>
+                <option key={p} value={p}>{p}</option>
               ))}
             </select>
             {participants.length === 0 ? (
@@ -1107,9 +905,7 @@ export default function BettingTerminal() {
               disabled={raceLocked}
             >
               {BET_TYPES.map((t) => (
-                <option key={t.key} value={t.key}>
-                  {t.label}
-                </option>
+                <option key={t.key} value={t.key}>{t.label}</option>
               ))}
             </select>
           </div>
@@ -1136,15 +932,10 @@ export default function BettingTerminal() {
 
             {isExotic ? (
               <label className="flex items-center gap-2 text-sm">
-                <input
-                  type="checkbox"
-                  checked={boxed}
-                  onChange={(e) => {
-                    setBoxed(e.target.checked);
-                    setBoxHorses([]);
-                  }}
-                  disabled={raceLocked}
-                />
+                <input type="checkbox" checked={boxed} onChange={(e) => {
+                  setBoxed(e.target.checked);
+                  setBoxHorses([]);
+                }} disabled={raceLocked} />
                 Box (any order)
               </label>
             ) : null}
@@ -1244,53 +1035,34 @@ export default function BettingTerminal() {
 
   const TvBoard = () => {
     const header = PUBLIC_BOARDS.find((b) => b.key === boardKey)?.label ?? "Board";
-    const t = theme;
 
-    const rows =
-      boardKey === "WIN" || boardKey === "PLACE" || boardKey === "SHOW"
-        ? horseBoard[boardKey]
-            .slice()
-            .sort((a, b) => b.on - a.on)
-            .map((r) => ({
-              left: r.horse,
-              on: `$${r.on.toFixed(2)}`,
-              odds: formatOdds(r.odds),
-              payout: formatPayoutPerTenCents(r.payoutPerDollar),
-            }))
-        : (boardKey === "EXACTA" ? exoticLeaders.EXACTA : boardKey === "TRIFECTA" ? exoticLeaders.TRIFECTA : exoticLeaders.SUPERFECTA).map((r) => ({
-            left: r.combo,
-            on: `$${r.on.toFixed(2)}`,
-            odds: formatOdds(r.odds),
-            payout: formatPayoutPerTenCents(r.payoutPerDollar),
-          }));
+    const rows = (boardKey === "WIN" || boardKey === "PLACE" || boardKey === "SHOW")
+      ? horseBoard[boardKey].slice().sort((a, b) => b.on - a.on).map((r) => ({
+          left: r.horse,
+          on: `$${r.on.toFixed(2)}`,
+          odds: formatOdds(r.odds),
+          payout: formatPayoutPerTenCents(r.payoutPerDollar),
+        }))
+      : (boardKey === "EXACTA" ? exoticLeaders.EXACTA : boardKey === "TRIFECTA" ? exoticLeaders.TRIFECTA : exoticLeaders.SUPERFECTA).map((r) => ({
+          left: r.combo,
+          on: `$${r.on.toFixed(2)}`,
+          odds: formatOdds(r.odds),
+          payout: formatPayoutPerTenCents(r.payoutPerDollar),
+        }));
 
     return (
-      <div className="min-h-screen" style={{ background: t.bg, color: t.text }}>
+      <div className="min-h-screen bg-white">
         <div className="max-w-6xl mx-auto p-4 sm:p-6 space-y-5">
           <div className="flex items-center justify-between gap-3">
-            <div className="space-y-2">
+            <div>
               <div className="text-3xl font-black">Betting Terminal</div>
-              <div className="text-lg" style={{ color: t.muted }}>
-                {header} - live pools, odds, payouts
-              </div>
-              {roomCode ? (
-                <div className="text-sm" style={{ color: t.muted }}>
-                  Room {roomCode}
-                </div>
-              ) : null}
-              {terminalGraphic ? (
-                <img
-                  src={terminalGraphic}
-                  alt="TV graphic"
-                  className="max-h-40 rounded-2xl border object-contain w-full"
-                  style={{ borderColor: t.border }}
-                />
-              ) : null}
+              <div className="text-lg text-gray-700">{header} - live pools, odds, payouts</div>
+              {roomCode ? <div className="text-sm text-gray-600">Room {roomCode}</div> : null}
             </div>
           </div>
 
           <div className="flex flex-wrap gap-2 items-center">
-            <label className="flex items-center gap-2 text-sm" style={{ color: t.muted }}>
+            <label className="flex items-center gap-2 text-sm">
               <input type="checkbox" checked={autoRotate} onChange={(e) => setAutoRotate(e.target.checked)} />
               Auto-rotate boards
             </label>
@@ -1298,13 +1070,8 @@ export default function BettingTerminal() {
               {PUBLIC_BOARDS.map((b) => (
                 <button
                   key={b.key}
-                  className="rounded-2xl px-4 py-2 text-sm font-semibold"
+                  className={"rounded-2xl px-4 py-2 text-sm font-semibold border " + (boardKey === b.key ? "bg-black text-white" : "")}
                   onClick={() => setBoardKey(b.key)}
-                  style={{
-                    border: `1px solid ${t.border}`,
-                    background: boardKey === b.key ? t.accent : "transparent",
-                    color: boardKey === b.key ? t.bg : t.text,
-                  }}
                 >
                   {b.label}
                 </button>
@@ -1313,33 +1080,33 @@ export default function BettingTerminal() {
           </div>
 
           <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
-            <div className="rounded-2xl p-4" style={{ border: `1px solid ${t.border}` }}>
+            <div className="rounded-2xl border p-4">
               <div className="font-semibold text-lg">Pools</div>
               <div className="mt-3 space-y-2 text-base">
-                {BET_TYPES.map((bt) => (
-                  <div key={bt.key} className="flex items-center justify-between">
-                    <div>{bt.label}</div>
-                    <div className="font-semibold">${(poolsTotals[bt.key] ?? 0).toFixed(2)}</div>
+                {BET_TYPES.map((t) => (
+                  <div key={t.key} className="flex items-center justify-between">
+                    <div>{t.label}</div>
+                    <div className="font-semibold">${(poolsTotals[t.key] ?? 0).toFixed(2)}</div>
                   </div>
                 ))}
               </div>
             </div>
 
-            <div className="rounded-2xl p-4 lg:col-span-2" style={{ border: `1px solid ${t.border}` }}>
+            <div className="rounded-2xl border p-4 lg:col-span-2">
               <div className="font-semibold text-lg">{header}</div>
               <div className="mt-3 overflow-x-auto">
                 <table className="w-full text-base">
                   <thead>
-                    <tr style={{ borderBottom: `1px solid ${t.border}` }}>
-                      <th className="py-3 pr-3 text-left">Outcome</th>
-                      <th className="py-3 pr-3 text-left">Bet On</th>
-                      <th className="py-3 pr-3 text-left">Odds</th>
-                      <th className="py-3 text-left">Payout</th>
+                    <tr className="text-left border-b">
+                      <th className="py-3 pr-3">Outcome</th>
+                      <th className="py-3 pr-3">Bet On</th>
+                      <th className="py-3 pr-3">Odds</th>
+                      <th className="py-3">Payout</th>
                     </tr>
                   </thead>
                   <tbody>
                     {rows.map((r) => (
-                      <tr key={r.left} style={{ borderBottom: `1px solid ${t.border}` }}>
+                      <tr key={r.left} className="border-b last:border-b-0">
                         <td className="py-3 pr-3 font-semibold">{r.left}</td>
                         <td className="py-3 pr-3">{r.on}</td>
                         <td className="py-3 pr-3">{r.odds}</td>
@@ -1349,21 +1116,15 @@ export default function BettingTerminal() {
                   </tbody>
                 </table>
               </div>
-              <div className="mt-3 text-sm" style={{ color: t.muted }}>
-                Theme: {themeByKey(tvThemeKey).name}
-              </div>
             </div>
           </div>
 
-          <div className="rounded-2xl p-4" style={{ border: `1px solid ${t.border}` }}>
+          <div className="rounded-2xl border p-4">
             <div className="font-semibold text-lg">Official Results</div>
             <div className="mt-3 grid grid-cols-2 sm:grid-cols-4 gap-3 text-base">
               {["first", "second", "third", "fourth"].map((k, idx) => (
-                <div key={k} className="rounded-2xl p-3" style={{ border: `1px solid ${t.border}` }}>
-                  <div className="text-sm" style={{ color: t.muted }}>
-                    {idx + 1}
-                    {idx === 0 ? "st" : idx === 1 ? "nd" : idx === 2 ? "rd" : "th"}
-                  </div>
+                <div key={k} className="rounded-2xl border p-3">
+                  <div className="text-sm text-gray-600">{idx + 1}{idx === 0 ? "st" : idx === 1 ? "nd" : idx === 2 ? "rd" : "th"}</div>
                   <div className="font-bold text-xl">{results[k] || "-"}</div>
                 </div>
               ))}
@@ -1382,10 +1143,6 @@ export default function BettingTerminal() {
   return (
     <div className="min-h-screen bg-white">
       <div className="max-w-3xl mx-auto p-4 sm:p-6 space-y-6">
-        {terminalGraphic ? (
-          <img src={terminalGraphic} alt="Terminal graphic" className="max-h-40 rounded-2xl border object-contain w-full" />
-        ) : null}
-
         <Header />
         <ModeSwitcher />
         <RoomPanel />
@@ -1397,7 +1154,7 @@ export default function BettingTerminal() {
           <ResultsPanel />
 
           <div className="text-xs text-gray-500 pb-10">
-            If a phone shows no names, the phone must open the QR link with the same room code, and the iPad must be using that same room.
+            If the phone shows no names - cloud sync is OFF or the phone is not using the same room code.
           </div>
         </div>
       </div>

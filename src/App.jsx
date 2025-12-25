@@ -3,7 +3,14 @@ import QRCode from "qrcode";
 
 // Cloud sync (for multi-phone live betting) via Firebase Firestore.
 // If FIREBASE_CONFIG stays null, the app runs LOCAL ONLY (iPad-only).
-let firebaseApp = null;
+const firebaseConfig = {
+  apiKey: "AIzaSyBcWTH6h_xDqfxAUYPHm8mXNNb-vMAWgNM",
+  authDomain: "betting-terminal.firebaseapp.com",
+  projectId: "betting-terminal",
+  storageBucket: "betting-terminal.firebasestorage.app",
+  messagingSenderId: "132647014088",
+  appId: "1:132647014088:web:f3b6f23cce3cc3849d9ffd"
+};
 let firestore = null;
 let onSnapshotFn = null;
 let docFn = null;

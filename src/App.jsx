@@ -4,7 +4,7 @@ import QRCode from "qrcode";
 // =====================
 // Firebase (cloud sync)
 // =====================
-// Your Firebase web config (cloud sync ON when you use a room).
+// Your Firebase web config. Cloud sync is ON when you use a room code.
 const FIREBASE_CONFIG = {
   apiKey: "AIzaSyBcWTH6h_xDqfxAUYPHm8mXNNb-vMAWgNM",
   authDomain: "betting-terminal.firebaseapp.com",
@@ -160,7 +160,6 @@ function themeByKey(key) {
 
 function csvEscape(v) {
   const s = String(v ?? "");
-  // FIXED: correct regex, no broken newline inside it
   if (/[\n\r,"]/g.test(s)) return `"${s.replace(/"/g, '""')}"`;
   return s;
 }
@@ -227,7 +226,7 @@ export default function BettingTerminal() {
   const [tvThemeKey, setTvThemeKey] = useState("DEFAULT");
 
   // Local persistence
-  const STORAGE_KEY = "betting-terminal-state-v7";
+  const STORAGE_KEY = "betting-terminal-state-v8";
   const loadState = () => {
     try {
       const raw = localStorage.getItem(STORAGE_KEY);
@@ -345,7 +344,7 @@ export default function BettingTerminal() {
     return `${baseUrl}?mode=TV${roomPart}${themePart}`;
   }, [baseUrl, roomCode, tvThemeKey]);
 
-  // FIXED: QR via DataURL (more reliable than canvas on iOS)
+  // QR via DataURL (more reliable than canvas on iOS)
   useEffect(() => {
     (async () => {
       if (!bettorUrl) {
@@ -605,7 +604,7 @@ export default function BettingTerminal() {
     setParticipants(next);
     setNameInput("");
 
-    // FIXED: keep stable focus for iPad Safari typing
+    // FIX: keep focus stable on iPad Safari typing
     setTimeout(() => {
       try {
         addNameRef.current?.focus();
@@ -809,6 +808,8 @@ export default function BettingTerminal() {
     return `$${(payoutPerDollar * 0.1).toFixed(2)} per $0.10`;
   };
 
+  const theme = themeByKey(tvThemeKey);
+
   const Header = () => (
     <div className="flex items-start justify-between gap-3">
       <div>
@@ -867,7 +868,7 @@ export default function BettingTerminal() {
 
         {!cloudReady ? (
           <div className="text-sm text-gray-700">
-            Cloud sync not ready yet. Make sure package.json includes firebase and redeploy.
+            Cloud sync not ready. Confirm package.json includes firebase, then redeploy.
           </div>
         ) : null}
 
@@ -930,7 +931,7 @@ export default function BettingTerminal() {
             ))}
           </select>
           <div className="text-xs text-gray-600">
-            TV link includes the theme: {tvThemeKey}
+            TV link includes theme: {tvThemeKey}
           </div>
         </div>
 
@@ -944,7 +945,11 @@ export default function BettingTerminal() {
 
           {terminalGraphic ? (
             <div className="space-y-2">
-              <img src={terminalGraphic} alt="Terminal graphic" className="max-h-40 rounded-2xl border object-contain w-full" />
+              <img
+                src={terminalGraphic}
+                alt="Terminal graphic"
+                className="max-h-40 rounded-2xl border object-contain w-full"
+              />
               <button onClick={clearGraphic} className={buttonSecondary}>
                 Remove graphic
               </button>
@@ -963,7 +968,7 @@ export default function BettingTerminal() {
             ) : (
               <div className="text-xs text-red-600">QR not ready - confirm qrcode dependency is installed.</div>
             )}
-            <div className="text-xs text-gray-600">Guests must use the same room code to see participants.</div>
+            <div className="text-xs text-gray-600">Guests must open the QR link with the same room code.</div>
           </div>
           <div className="space-y-2">
             <div className="text-sm font-semibold">TV link</div>
@@ -1037,6 +1042,11 @@ export default function BettingTerminal() {
               Win pool: ${(poolsTotals.WIN ?? 0).toFixed(2)} | Place: ${(poolsTotals.PLACE ?? 0).toFixed(2)} | Show: ${(poolsTotals.SHOW ?? 0).toFixed(2)}
             </div>
             <div className="mt-1">Room: {roomCode || "(local)"} | Sync: {syncMode}</div>
+            {roomCode && syncMode !== "CLOUD" ? (
+              <div className="mt-1 text-xs text-red-600">
+                This phone is not in Cloud mode. Make sure the URL includes &room=CODE.
+              </div>
+            ) : null}
           </div>
         ) : null}
 
@@ -1074,7 +1084,9 @@ export default function BettingTerminal() {
                 </option>
               ))}
             </select>
-            {participants.length === 0 ? <div className="text-xs text-red-600">Host must add participants first.</div> : null}
+            {participants.length === 0 ? (
+              <div className="text-xs text-red-600">Host must add participants first.</div>
+            ) : null}
           </div>
 
           <div className="space-y-1">
@@ -1114,7 +1126,9 @@ export default function BettingTerminal() {
               disabled={raceLocked}
             />
             <div className="text-xs text-gray-600">Use $0.10 increments.</div>
-            {enforceMaxBet && amount > maxBet ? <div className="text-xs text-red-600">Amount exceeds max bet of ${Number(maxBet).toFixed(2)}.</div> : null}
+            {enforceMaxBet && amount > maxBet ? (
+              <div className="text-xs text-red-600">Amount exceeds max bet of ${Number(maxBet).toFixed(2)}.</div>
+            ) : null}
           </div>
 
           <div className="space-y-2">
@@ -1159,14 +1173,16 @@ export default function BettingTerminal() {
                     );
                   })}
                 </div>
-                {boxCombos.length > 120 ? <div className="text-xs text-red-600">Too many tickets. Select fewer horses.</div> : null}
+                {boxCombos.length > 120 ? (
+                  <div className="text-xs text-red-600">Too many tickets. Select fewer horses.</div>
+                ) : null}
               </div>
             ) : (
               <div className="grid grid-cols-1 gap-2">
                 <PickSelect label={picksNeeded === 1 ? "Pick" : "1st"} value={pick1} onChange={setPick1} disabled={raceLocked} />
                 {picksNeeded >= 2 ? <PickSelect label="2nd" value={pick2} onChange={setPick2} disabled={raceLocked} /> : null}
                 {picksNeeded >= 3 ? <PickSelect label="3rd" value={pick3} onChange={setPick3} disabled={raceLocked} /> : null}
-                {picksNeeded >= 4 ? <PickSelect label="4th"} value={pick4} onChange={setPick4} disabled={raceLocked} /> : null}
+                {picksNeeded >= 4 ? <PickSelect label="4th" value={pick4} onChange={setPick4} disabled={raceLocked} /> : null}
               </div>
             )}
           </div>
@@ -1176,7 +1192,9 @@ export default function BettingTerminal() {
           <button onClick={addBet} className={buttonPrimary} disabled={!canAddBet}>
             Submit bet
           </button>
-          {boxed && isExotic && boxCombos.length > 0 ? <div className="text-xs text-gray-600 self-center">Submitting {boxCombos.length} tickets.</div> : null}
+          {boxed && isExotic && boxCombos.length > 0 ? (
+            <div className="text-xs text-gray-600 self-center">Submitting {boxCombos.length} tickets.</div>
+          ) : null}
         </div>
       </div>
     );
@@ -1226,7 +1244,7 @@ export default function BettingTerminal() {
 
   const TvBoard = () => {
     const header = PUBLIC_BOARDS.find((b) => b.key === boardKey)?.label ?? "Board";
-    const t = themeByKey(tvThemeKey);
+    const t = theme;
 
     const rows =
       boardKey === "WIN" || boardKey === "PLACE" || boardKey === "SHOW"
@@ -1261,7 +1279,12 @@ export default function BettingTerminal() {
                 </div>
               ) : null}
               {terminalGraphic ? (
-                <img src={terminalGraphic} alt="TV graphic" className="max-h-40 rounded-2xl border object-contain w-full" style={{ borderColor: t.border }} />
+                <img
+                  src={terminalGraphic}
+                  alt="TV graphic"
+                  className="max-h-40 rounded-2xl border object-contain w-full"
+                  style={{ borderColor: t.border }}
+                />
               ) : null}
             </div>
           </div>
@@ -1374,7 +1397,7 @@ export default function BettingTerminal() {
           <ResultsPanel />
 
           <div className="text-xs text-gray-500 pb-10">
-            Phone not seeing names usually means: iPad must Generate/Use room, and phone must open the QR link that includes &room=THECODE.
+            If a phone shows no names, the phone must open the QR link with the same room code, and the iPad must be using that same room.
           </div>
         </div>
       </div>

@@ -1,16 +1,20 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import QRCode from "qrcode";
 
-// Cloud sync (for multi-phone live betting) via Firebase Firestore.
-// If FIREBASE_CONFIG stays null, the app runs LOCAL ONLY (iPad-only).
-const firebaseConfig = {
+// =====================
+// Firebase (cloud sync)
+// =====================
+// This is your Firebase config. Cloud sync is ON when a room code is used.
+const FIREBASE_CONFIG = {
   apiKey: "AIzaSyBcWTH6h_xDqfxAUYPHm8mXNNb-vMAWgNM",
   authDomain: "betting-terminal.firebaseapp.com",
   projectId: "betting-terminal",
   storageBucket: "betting-terminal.firebasestorage.app",
   messagingSenderId: "132647014088",
-  appId: "1:132647014088:web:f3b6f23cce3cc3849d9ffd"
+  appId: "1:132647014088:web:f3b6f23cce3cc3849d9ffd",
 };
+
+let firebaseApp = null;
 let firestore = null;
 let onSnapshotFn = null;
 let docFn = null;
@@ -20,18 +24,6 @@ let collectionFn = null;
 let queryFn = null;
 let orderByFn = null;
 let serverTimestampFn = null;
-
-const FIREBASE_CONFIG = null;
-// Paste your Firebase web config here to enable multi-phone sync.
-// Example:
-// const FIREBASE_CONFIG = {
-//   apiKey: "...",
-//   authDomain: "...",
-//   projectId: "...",
-//   storageBucket: "...",
-//   messagingSenderId: "...",
-//   appId: "...",
-// };
 
 async function ensureFirebase() {
   if (!FIREBASE_CONFIG) return false;
@@ -55,6 +47,9 @@ async function ensureFirebase() {
   return true;
 }
 
+// =====================
+// Constants
+// =====================
 const BET_TYPES = [
   { key: "WIN", label: "Win" },
   { key: "PLACE", label: "Place" },
@@ -86,7 +81,7 @@ function randomRoomCode() {
   return out;
 }
 
-// permutations of length k (ordered) from a list of unique items
+// permutations of length k (ordered), from unique items
 function permutations(items, k) {
   const out = [];
   const used = new Array(items.length).fill(false);
@@ -110,26 +105,35 @@ function permutations(items, k) {
   return out;
 }
 
-export default function App() {
+export default function BettingTerminal() {
   // Modes:
-  // TERMINAL = admin iPad
-  // BETTOR = guests on phones
+  // TERMINAL = iPad host/admin
+  // BETTOR = phone guests
   // TV = screen share board
   const [mode, setMode] = useState("TERMINAL");
 
   const [baseUrl, setBaseUrl] = useState("");
   const qrCanvasRef = useRef(null);
 
+  // Keep focus stable for iOS typing
+  const nameInputRef = useRef(null);
+
+  // Kiosk mode hides mode switching on-screen
   const [kioskMode, setKioskMode] = useState(false);
 
-  // Room and sync
-  const [roomCode, setRoomCode] = useState("");
-  const [roomInput, setRoomInput] = useState("");
+  // Sync
   const [cloudReady, setCloudReady] = useState(false);
   const [syncMode, setSyncMode] = useState("LOCAL"); // LOCAL | CLOUD
 
+  // Room
+  const [roomCode, setRoomCode] = useState("");
+  const [roomInput, setRoomInput] = useState("");
+
+  // Terminal / TV graphic
+  const [terminalGraphic, setTerminalGraphic] = useState(null); // data URL string or null
+
   // Local persistence
-  const STORAGE_KEY = "betting-terminal-state-v3";
+  const STORAGE_KEY = "betting-terminal-state-v5";
   const loadState = () => {
     try {
       const raw = localStorage.getItem(STORAGE_KEY);
@@ -149,32 +153,36 @@ export default function App() {
 
   const [betType, setBetType] = useState(persisted?.betType ?? "WIN");
   const [bettor, setBettor] = useState(persisted?.bettor ?? "");
-  const [amount, setAmount] = useState(persisted?.amount ?? 0.1); // $0.10 default
+
+  // default $0.10
+  const [amount, setAmount] = useState(persisted?.amount ?? 0.1);
 
   // ordered picks (non-boxed)
-  const [pick1, setPick1] = useState(persisted?.pick1 ?? "");
-  const [pick2, setPick2] = useState(persisted?.pick2 ?? "");
-  const [pick3, setPick3] = useState(persisted?.pick3 ?? "");
-  const [pick4, setPick4] = useState(persisted?.pick4 ?? "");
+  const [pick1, setPick1] = useState("");
+  const [pick2, setPick2] = useState("");
+  const [pick3, setPick3] = useState("");
+  const [pick4, setPick4] = useState("");
 
-  // Boxing for exotics
-  const [boxed, setBoxed] = useState(persisted?.boxed ?? false);
-  const [boxHorses, setBoxHorses] = useState(persisted?.boxHorses ?? []);
+  // boxing
+  const [boxed, setBoxed] = useState(false);
+  const [boxHorses, setBoxHorses] = useState([]);
 
-  const [raceLocked, setRaceLocked] = useState(persisted?.raceLocked ?? false);
+  const [raceLocked, setRaceLocked] = useState(false);
 
-  // No minimum bet, only a max bet
-  const [enforceMaxBet, setEnforceMaxBet] = useState(persisted?.enforceMaxBet ?? true);
-  const [maxBet, setMaxBet] = useState(persisted?.maxBet ?? 10);
+  // max bet (no minimum)
+  const [enforceMaxBet, setEnforceMaxBet] = useState(true);
+  const [maxBet, setMaxBet] = useState(10);
 
-  // Official results
-  const [results, setResults] = useState(persisted?.results ?? { first: "", second: "", third: "", fourth: "" });
+  // results
+  const [results, setResults] = useState({ first: "", second: "", third: "", fourth: "" });
 
-  // TV board controls
-  const [boardKey, setBoardKey] = useState(persisted?.boardKey ?? "WIN");
-  const [autoRotate, setAutoRotate] = useState(persisted?.autoRotate ?? true);
+  // TV board rotation
+  const [boardKey, setBoardKey] = useState("WIN");
+  const [autoRotate, setAutoRotate] = useState(true);
 
-  // Read mode + room from URL
+  // ---------
+  // URL parse
+  // ---------
   useEffect(() => {
     try {
       const params = new URLSearchParams(window.location.search);
@@ -200,6 +208,34 @@ export default function App() {
     }
   }, []);
 
+  // Restore terminal graphic from local state
+  useEffect(() => {
+    if (persisted?.terminalGraphic) setTerminalGraphic(persisted.terminalGraphic);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Firebase readiness
+  useEffect(() => {
+    (async () => {
+      const ok = await ensureFirebase();
+      setCloudReady(ok);
+
+      // If a device loads with ?room=... and Firebase exists, put it in CLOUD mode automatically
+      if (ok) {
+        try {
+          const params = new URLSearchParams(window.location.search);
+          const qRoom = params.get("room");
+          if (qRoom) setSyncMode("CLOUD");
+        } catch {
+          // ignore
+        }
+      } else {
+        setSyncMode("LOCAL");
+      }
+    })();
+  }, []);
+
+  // QR links
   const bettorUrl = useMemo(() => {
     if (!baseUrl) return "";
     const roomPart = roomCode ? `&room=${encodeURIComponent(roomCode)}` : "";
@@ -218,7 +254,9 @@ export default function App() {
     QRCode.toCanvas(canvas, bettorUrl, { width: 220, margin: 1 }).catch(() => {});
   }, [bettorUrl]);
 
-  // LOCAL persistence only
+  // -----------------
+  // Local persistence
+  // -----------------
   useEffect(() => {
     if (syncMode !== "LOCAL") return;
     try {
@@ -228,12 +266,6 @@ export default function App() {
         betType,
         bettor,
         amount,
-        pick1,
-        pick2,
-        pick3,
-        pick4,
-        boxed,
-        boxHorses,
         raceLocked,
         enforceMaxBet,
         maxBet,
@@ -241,6 +273,7 @@ export default function App() {
         boardKey,
         autoRotate,
         kioskMode,
+        terminalGraphic,
       };
       localStorage.setItem(STORAGE_KEY, JSON.stringify(snapshot));
     } catch {
@@ -253,12 +286,6 @@ export default function App() {
     betType,
     bettor,
     amount,
-    pick1,
-    pick2,
-    pick3,
-    pick4,
-    boxed,
-    boxHorses,
     raceLocked,
     enforceMaxBet,
     maxBet,
@@ -266,18 +293,12 @@ export default function App() {
     boardKey,
     autoRotate,
     kioskMode,
+    terminalGraphic,
   ]);
 
-  // Firebase readiness
-  useEffect(() => {
-    (async () => {
-      const ok = await ensureFirebase();
-      setCloudReady(ok);
-      if (!ok) setSyncMode("LOCAL");
-    })();
-  }, []);
-
-  // Subscribe to room + bets in CLOUD mode
+  // -----------------
+  // Cloud subscription
+  // -----------------
   useEffect(() => {
     if (!cloudReady) return;
     if (syncMode !== "CLOUD") return;
@@ -297,6 +318,7 @@ export default function App() {
         setEnforceMaxBet(data.enforceMaxBet ?? true);
         setMaxBet(Number(data.maxBet ?? 10));
         setResults(data.results ?? { first: "", second: "", third: "", fourth: "" });
+        setTerminalGraphic(data.terminalGraphic ?? null);
       });
 
       const betsRef = collectionFn(firestore, "rooms", roomCode, "bets");
@@ -307,7 +329,7 @@ export default function App() {
           const v = d.data();
           rows.push({
             id: d.id,
-            createdAt: v.createdAt?.toDate ? v.createdAt.toDate().toISOString() : v.createdAt ?? new Date().toISOString(),
+            createdAt: v.createdAt?.toDate ? v.createdAt.toDate().toISOString() : new Date().toISOString(),
             bettor: v.bettor,
             amount: Number(v.amount ?? 0),
             betType: v.betType,
@@ -317,7 +339,7 @@ export default function App() {
         setBets(rows);
       });
 
-      // Ensure room exists
+      // Ensure doc exists
       await setDocFn(
         roomRef,
         {
@@ -326,6 +348,7 @@ export default function App() {
           enforceMaxBet,
           maxBet: Number(maxBet),
           results,
+          terminalGraphic: terminalGraphic ?? null,
           updatedAt: serverTimestampFn(),
         },
         { merge: true }
@@ -339,37 +362,16 @@ export default function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [cloudReady, syncMode, roomCode]);
 
-  // TV auto-rotate
-  useEffect(() => {
-    if (mode !== "TV") return;
-    if (!autoRotate) return;
-    const keys = PUBLIC_BOARDS.map((b) => b.key);
-    const i = keys.indexOf(boardKey);
-    const next = keys[(i + 1 + keys.length) % keys.length];
-    const handle = setTimeout(() => setBoardKey(next), 6000);
-    return () => clearTimeout(handle);
-  }, [mode, autoRotate, boardKey]);
-
   const pushRoomUpdate = async (patch) => {
     if (!cloudReady || syncMode !== "CLOUD" || !roomCode) return;
     const roomRef = docFn(firestore, "rooms", roomCode);
     await setDocFn(roomRef, { ...patch, updatedAt: serverTimestampFn() }, { merge: true });
   };
 
-  const addParticipant = async () => {
-    const trimmed = nameInput.trim();
-    if (!trimmed) return;
-    if (participants.includes(trimmed)) return;
-
-    const next = [...participants, trimmed];
-    setParticipants(next);
-    setNameInput("");
-    if (!bettor) setBettor(trimmed);
-
-    if (syncMode === "CLOUD") await pushRoomUpdate({ participants: next });
-  };
-
-  const poolFor = (type) => bets.filter((b) => b.betType === type);
+  // -----------------
+  // Derived helpers
+  // -----------------
+  const isExotic = betType === "EXACTA" || betType === "TRIFECTA" || betType === "SUPERFECTA";
 
   const picksNeeded = useMemo(() => {
     if (betType === "WIN" || betType === "PLACE" || betType === "SHOW") return 1;
@@ -379,17 +381,14 @@ export default function App() {
     return 1;
   }, [betType]);
 
-  const isExotic = betType === "EXACTA" || betType === "TRIFECTA" || betType === "SUPERFECTA";
   const currentPicks = useMemo(() => [pick1, pick2, pick3, pick4].slice(0, picksNeeded), [pick1, pick2, pick3, pick4, picksNeeded]);
-
-  const boxSize = picksNeeded;
 
   const boxCombos = useMemo(() => {
     if (!boxed || !isExotic) return [];
     const horses = boxHorses.filter(Boolean);
-    if (horses.length < boxSize) return [];
-    return permutations(horses, boxSize);
-  }, [boxed, isExotic, boxHorses, boxSize]);
+    if (horses.length < picksNeeded) return [];
+    return permutations(horses, picksNeeded);
+  }, [boxed, isExotic, boxHorses, picksNeeded]);
 
   const canAddBet = useMemo(() => {
     if (raceLocked) return false;
@@ -398,88 +397,23 @@ export default function App() {
     if (enforceMaxBet && amount > maxBet) return false;
 
     if (boxed && isExotic) {
-      if (boxHorses.filter(Boolean).length < boxSize) return false;
       if (boxCombos.length === 0) return false;
-      if (boxCombos.length > 120) return false; // guardrail
+      if (boxCombos.length > 120) return false;
       return true;
     }
 
     if (currentPicks.some((p) => !p)) return false;
-    const uniq = new Set(currentPicks);
-    if (uniq.size !== currentPicks.length) return false;
+    if (new Set(currentPicks).size !== currentPicks.length) return false;
     return true;
-  }, [raceLocked, bettor, amount, enforceMaxBet, maxBet, boxed, isExotic, boxHorses, boxSize, boxCombos.length, currentPicks]);
+  }, [raceLocked, bettor, amount, enforceMaxBet, maxBet, boxed, isExotic, boxCombos.length, currentPicks]);
 
-  const addBet = async () => {
-    if (!canAddBet) return;
+  const poolFor = (type) => bets.filter((b) => b.betType === type);
 
-    const perTicket = Number(amount);
-    const tickets = boxed && isExotic ? boxCombos : [currentPicks];
-
-    // LOCAL
-    if (!(syncMode === "CLOUD" && cloudReady && roomCode)) {
-      const now = new Date().toISOString();
-      const newRows = tickets.map((picks) => ({
-        id: crypto?.randomUUID ? crypto.randomUUID() : String(Date.now()) + Math.random().toString(16).slice(2),
-        createdAt: now,
-        bettor,
-        amount: perTicket,
-        betType,
-        picks,
-      }));
-      setBets([...bets, ...newRows]);
-      return;
-    }
-
-    // CLOUD
-    const betsRef = collectionFn(firestore, "rooms", roomCode, "bets");
-    await Promise.all(
-      tickets.map((picks) =>
-        addDocFn(betsRef, {
-          bettor,
-          amount: perTicket,
-          betType,
-          picks,
-          createdAt: serverTimestampFn(),
-        })
-      )
-    );
-  };
-
-  const isWinningTicket = (bet, r) => {
-    const [a, b, c, d] = bet.picks;
-
-    // Real horse racing semantics
-    if (bet.betType === "WIN") return a === r.first;
-    if (bet.betType === "PLACE") return a === r.first || a === r.second;
-    if (bet.betType === "SHOW") return a === r.first || a === r.second || a === r.third;
-
-    if (bet.betType === "EXACTA") return a === r.first && b === r.second;
-    if (bet.betType === "TRIFECTA") return a === r.first && b === r.second && c === r.third;
-    if (bet.betType === "SUPERFECTA") return a === r.first && b === r.second && c === r.third && d === r.fourth;
-
-    return false;
-  };
-
-  const payoutsByType = useMemo(() => {
-    const out = {};
-    for (const t of BET_TYPES.map((x) => x.key)) {
-      const pool = poolFor(t);
-      const total = pool.reduce((s, b) => s + b.amount, 0);
-      const winners = pool.filter((b) => isWinningTicket(b, results));
-      if (winners.length === 0 || total === 0) out[t] = { total, winners: [], split: 0 };
-      else {
-        const split = total / winners.length;
-        out[t] = { total, winners: winners.map((w) => ({ id: w.id, bettor: w.bettor, split })), split };
-      }
-    }
-    return out;
-  }, [bets, results]);
-
-  // Live pools and odds boards
   const poolsTotals = useMemo(() => {
     const totals = {};
-    for (const t of BET_TYPES.map((x) => x.key)) totals[t] = poolFor(t).reduce((s, b) => s + b.amount, 0);
+    for (const t of BET_TYPES.map((x) => x.key)) {
+      totals[t] = poolFor(t).reduce((s, b) => s + b.amount, 0);
+    }
     return totals;
   }, [bets]);
 
@@ -496,13 +430,14 @@ export default function App() {
     for (const b of bets) {
       const t = b.betType;
       if (t === "WIN" || t === "PLACE" || t === "SHOW") {
-        const horseName = b.picks[0];
-        out[t].set(horseName, (out[t].get(horseName) ?? 0) + b.amount);
+        const horse = b.picks[0];
+        out[t].set(horse, (out[t].get(horse) ?? 0) + b.amount);
       } else {
         const key = b.picks.join(" > ");
         out[t].set(key, (out[t].get(key) ?? 0) + b.amount);
       }
     }
+
     return out;
   }, [bets]);
 
@@ -514,105 +449,97 @@ export default function App() {
         const on = map.get(h) ?? 0;
         const payoutPerDollar = on > 0 ? total / on : 0;
         const odds = on > 0 ? payoutPerDollar - 1 : 0;
-        return { horse: h, on, pool: total, payoutPerDollar, odds };
+        return { horse: h, on, payoutPerDollar, odds };
       });
     };
-    return { WIN: build("WIN"), PLACE: build("PLACE"), SHOW: build("SHOW") };
+
+    return {
+      WIN: build("WIN"),
+      PLACE: build("PLACE"),
+      SHOW: build("SHOW"),
+    };
   }, [participants, poolsTotals, amountsOn]);
 
   const exoticLeaders = useMemo(() => {
     const build = (t, limit = 12) => {
       const total = poolsTotals[t] ?? 0;
       const map = amountsOn[t];
-      const rows = Array.from(map.entries())
-        .map(([combo, on]) => ({ combo, on, payoutPerDollar: on > 0 ? total / on : 0, odds: on > 0 ? total / on - 1 : 0 }))
+      return Array.from(map.entries())
+        .map(([combo, on]) => ({
+          combo,
+          on,
+          payoutPerDollar: on > 0 ? total / on : 0,
+          odds: on > 0 ? total / on - 1 : 0,
+        }))
         .sort((a, b) => b.on - a.on)
         .slice(0, limit);
-      return { total, rows };
     };
-    return { EXACTA: build("EXACTA"), TRIFECTA: build("TRIFECTA"), SUPERFECTA: build("SUPERFECTA") };
+
+    return {
+      EXACTA: build("EXACTA"),
+      TRIFECTA: build("TRIFECTA"),
+      SUPERFECTA: build("SUPERFECTA"),
+    };
   }, [poolsTotals, amountsOn]);
 
-  const ledger = useMemo(() => {
-    const people = participants.length ? participants : Array.from(new Set(bets.map((b) => b.bettor)));
-    const spent = new Map();
-    const won = new Map();
-    for (const p of people) {
-      spent.set(p, 0);
-      won.set(p, 0);
-    }
-    for (const b of bets) spent.set(b.bettor, (spent.get(b.bettor) ?? 0) + b.amount);
-    for (const t of Object.keys(payoutsByType)) {
-      for (const w of payoutsByType[t].winners) won.set(w.bettor, (won.get(w.bettor) ?? 0) + w.split);
-    }
-    return people
-      .map((p) => {
-        const s = spent.get(p) ?? 0;
-        const w = won.get(p) ?? 0;
-        return { person: p, spent: s, won: w, net: w - s };
-      })
-      .sort((a, b) => b.net - a.net);
-  }, [participants, bets, payoutsByType]);
+  // -----------------
+  // Actions
+  // -----------------
+  const addParticipant = async () => {
+    const trimmed = nameInput.trim();
+    if (!trimmed) return;
+    if (participants.includes(trimmed)) return;
 
-  const exportCsv = () => {
-    const lines = [];
-    lines.push(["Room", roomCode || "(local)"].map(csvEscape).join(","));
-    lines.push(["Race Results", ""].map(csvEscape).join(","));
-    lines.push(["1st", results.first].map(csvEscape).join(","));
-    lines.push(["2nd", results.second].map(csvEscape).join(","));
-    lines.push(["3rd", results.third].map(csvEscape).join(","));
-    lines.push(["4th", results.fourth].map(csvEscape).join(","));
-    lines.push(["", ""].join(","));
+    const next = [...participants, trimmed];
+    setParticipants(next);
+    setNameInput("");
 
-    lines.push(["Pools", ""].join(","));
-    lines.push(["Type", "Total Pool"].map(csvEscape).join(","));
-    for (const t of BET_TYPES.map((x) => x.key)) lines.push([t, (poolsTotals[t] ?? 0).toFixed(2)].map(csvEscape).join(","));
-    lines.push(["", ""].join(","));
+    // Keep focus stable on iPad Safari
+    setTimeout(() => {
+      try {
+        nameInputRef.current?.focus();
+      } catch {
+        // ignore
+      }
+    }, 0);
 
-    lines.push(["Ledger", ""].join(","));
-    lines.push(["Person", "Spent", "Won", "Net"].map(csvEscape).join(","));
-    for (const r of ledger) lines.push([r.person, r.spent.toFixed(2), r.won.toFixed(2), r.net.toFixed(2)].map(csvEscape).join(","));
-    lines.push(["", ""].join(","));
+    if (!bettor) setBettor(trimmed);
 
-    lines.push(["Bets", ""].join(","));
-    lines.push(["Time", "Bettor", "Type", "Picks", "Amount"].map(csvEscape).join(","));
-    for (const b of bets) lines.push([b.createdAt, b.bettor, b.betType, b.picks.join(" > "), Number(b.amount).toFixed(2)].map(csvEscape).join(","));
-
-    const blob = new Blob([lines.join("\n")], { type: "text/csv;charset=utf-8" });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = `betting-terminal-${new Date().toISOString().slice(0, 10)}.csv`;
-    document.body.appendChild(a);
-    a.click();
-    a.remove();
-    URL.revokeObjectURL(url);
+    if (syncMode === "CLOUD") await pushRoomUpdate({ participants: next });
   };
 
-  const newRace = async () => {
-    // LOCAL new race: clear bets and results
-    if (syncMode === "LOCAL") {
-      setBets([]);
-      setResults({ first: "", second: "", third: "", fourth: "" });
-      setRaceLocked(false);
-      setBetType("WIN");
-      setPick1("");
-      setPick2("");
-      setPick3("");
-      setPick4("");
-      setBoxed(false);
-      setBoxHorses([]);
-      setAmount(0.1);
+  const addBet = async () => {
+    if (!canAddBet) return;
+
+    const perTicket = Number(amount);
+    const tickets = boxed && isExotic ? boxCombos : [currentPicks];
+
+    if (!(syncMode === "CLOUD" && cloudReady && roomCode)) {
+      const now = new Date().toISOString();
+      const rows = tickets.map((picks) => ({
+        id: crypto?.randomUUID ? crypto.randomUUID() : String(Date.now()) + Math.random().toString(16).slice(2),
+        createdAt: now,
+        bettor,
+        amount: perTicket,
+        betType,
+        picks,
+      }));
+      setBets((prev) => [...prev, ...rows]);
       return;
     }
 
-    // CLOUD: generate a new room code (clean slate)
-    const next = randomRoomCode();
-    setRoomCode(next);
-    setRoomInput(next);
-    setBets([]);
-    setResults({ first: "", second: "", third: "", fourth: "" });
-    setRaceLocked(false);
+    const betsRef = collectionFn(firestore, "rooms", roomCode, "bets");
+    await Promise.all(
+      tickets.map((picks) =>
+        addDocFn(betsRef, {
+          bettor,
+          amount: perTicket,
+          betType,
+          picks,
+          createdAt: serverTimestampFn(),
+        })
+      )
+    );
   };
 
   const lockRace = async (locked) => {
@@ -627,26 +554,118 @@ export default function App() {
   };
 
   const updateMaxBet = async (patch) => {
-    if (patch.enforceMaxBet !== undefined) setEnforceMaxBet(patch.enforceMaxBet);
-    if (patch.maxBet !== undefined) setMaxBet(patch.maxBet);
-    if (syncMode === "CLOUD") {
-      await pushRoomUpdate({
-        enforceMaxBet: patch.enforceMaxBet ?? enforceMaxBet,
-        maxBet: patch.maxBet ?? maxBet,
-      });
+    const nextEnforce = patch.enforceMaxBet !== undefined ? patch.enforceMaxBet : enforceMaxBet;
+    const nextMax = patch.maxBet !== undefined ? patch.maxBet : maxBet;
+
+    setEnforceMaxBet(nextEnforce);
+    setMaxBet(nextMax);
+
+    if (syncMode === "CLOUD") await pushRoomUpdate({ enforceMaxBet: nextEnforce, maxBet: nextMax });
+  };
+
+  const newRace = async () => {
+    // LOCAL: wipe
+    if (syncMode !== "CLOUD") {
+      setBets([]);
+      setResults({ first: "", second: "", third: "", fourth: "" });
+      setRaceLocked(false);
+      setBetType("WIN");
+      setBettor("");
+      setAmount(0.1);
+      setPick1("");
+      setPick2("");
+      setPick3("");
+      setPick4("");
+      setBoxed(false);
+      setBoxHorses([]);
+      return;
     }
+
+    // CLOUD: easiest is new room
+    const rc = randomRoomCode();
+    setRoomCode(rc);
+    setRoomInput(rc);
+    setBets([]);
+    setResults({ first: "", second: "", third: "", fourth: "" });
+    setRaceLocked(false);
+    await pushRoomUpdate({
+      participants,
+      raceLocked: false,
+      results: { first: "", second: "", third: "", fourth: "" },
+      terminalGraphic: terminalGraphic ?? null,
+    });
   };
 
-  const formatOdds = (odds) => {
-    if (!odds || odds <= 0) return "-";
-    return `${odds.toFixed(2)}-1`;
+  const exportCsv = () => {
+    const lines = [];
+    lines.push(["Room", roomCode || "(local)"].map(csvEscape).join(","));
+    lines.push(["Race Results", ""].map(csvEscape).join(","));
+    lines.push(["1st", results.first].map(csvEscape).join(","));
+    lines.push(["2nd", results.second].map(csvEscape).join(","));
+    lines.push(["3rd", results.third].map(csvEscape).join(","));
+    lines.push(["4th", results.fourth].map(csvEscape).join(","));
+    lines.push(["", ""].join(","));
+
+    lines.push(["Pools", ""].join(","));
+    lines.push(["Type", "Total Pool"].map(csvEscape).join(","));
+    for (const t of BET_TYPES.map((x) => x.key)) {
+      lines.push([t, (poolsTotals[t] ?? 0).toFixed(2)].map(csvEscape).join(","));
+    }
+    lines.push(["", ""].join(","));
+
+    lines.push(["Bets", ""].join(","));
+    lines.push(["Time", "Bettor", "Type", "Picks", "Amount"].map(csvEscape).join(","));
+    for (const b of bets) {
+      lines.push([b.createdAt, b.bettor, b.betType, (b.picks || []).join(" > "), Number(b.amount).toFixed(2)].map(csvEscape).join(","));
+    }
+
+    // FIXED: proper newline join
+    const blob = new Blob([lines.join("\n")], { type: "text/csv;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `betting-terminal-${new Date().toISOString().slice(0, 10)}.csv`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
   };
 
-  const formatPayoutPerDollar = (p) => {
-    if (!p || p <= 0) return "-";
-    return `$${p.toFixed(2)} per $1`;
+  // Terminal graphic upload
+  const onUploadGraphic = async (file) => {
+    if (!file) return;
+
+    // Keep it reasonable
+    if (!file.type.startsWith("image/")) return;
+
+    const reader = new FileReader();
+    reader.onload = async () => {
+      const dataUrl = String(reader.result || "");
+      setTerminalGraphic(dataUrl);
+      if (syncMode === "CLOUD") await pushRoomUpdate({ terminalGraphic: dataUrl });
+    };
+    reader.readAsDataURL(file);
   };
 
+  const clearGraphic = async () => {
+    setTerminalGraphic(null);
+    if (syncMode === "CLOUD") await pushRoomUpdate({ terminalGraphic: null });
+  };
+
+  // TV auto rotate
+  useEffect(() => {
+    if (mode !== "TV") return;
+    if (!autoRotate) return;
+    const keys = PUBLIC_BOARDS.map((b) => b.key);
+    const i = keys.indexOf(boardKey);
+    const next = keys[(i + 1 + keys.length) % keys.length];
+    const handle = setTimeout(() => setBoardKey(next), 6000);
+    return () => clearTimeout(handle);
+  }, [mode, autoRotate, boardKey]);
+
+  // -----------------
+  // UI helpers
+  // -----------------
   const smallSelect = "border rounded-2xl p-3 text-base w-full";
   const smallInput = "border rounded-2xl p-3 text-base w-full";
   const buttonPrimary = "rounded-2xl px-4 py-3 text-base font-semibold bg-black text-white disabled:opacity-40 disabled:cursor-not-allowed";
@@ -666,63 +685,21 @@ export default function App() {
     </div>
   );
 
-  const LiveOddsMini = () => (
-    <div className="rounded-2xl border p-4 space-y-3">
-      <div className="flex items-center justify-between">
-        <div className="font-semibold">Live pools and odds</div>
-        <div className="text-xs text-gray-600">{roomCode ? `Room ${roomCode}` : "Local"}</div>
-      </div>
+  const formatOdds = (odds) => {
+    if (!odds || odds <= 0) return "-";
+    return `${odds.toFixed(2)}-1`;
+  };
 
-      <div className="grid grid-cols-3 gap-2 text-sm">
-        <div className="rounded-2xl border p-2">
-          <div className="text-xs text-gray-600">Win pool</div>
-          <div className="font-semibold">${(poolsTotals.WIN ?? 0).toFixed(2)}</div>
-        </div>
-        <div className="rounded-2xl border p-2">
-          <div className="text-xs text-gray-600">Place pool</div>
-          <div className="font-semibold">${(poolsTotals.PLACE ?? 0).toFixed(2)}</div>
-        </div>
-        <div className="rounded-2xl border p-2">
-          <div className="text-xs text-gray-600">Show pool</div>
-          <div className="font-semibold">${(poolsTotals.SHOW ?? 0).toFixed(2)}</div>
-        </div>
-      </div>
-
-      <div className="overflow-x-auto">
-        <table className="w-full text-sm">
-          <thead>
-            <tr className="text-left border-b">
-              <th className="py-2 pr-2">Horse</th>
-              <th className="py-2 pr-2">Win odds</th>
-              <th className="py-2">Win payout</th>
-            </tr>
-          </thead>
-          <tbody>
-            {horseBoard.WIN
-              .slice()
-              .sort((a, b) => b.on - a.on)
-              .map((r) => (
-                <tr key={r.horse} className="border-b last:border-b-0">
-                  <td className="py-2 pr-2 font-medium">{r.horse}</td>
-                  <td className="py-2 pr-2">{formatOdds(r.odds)}</td>
-                  <td className="py-2">{formatPayoutPerDollar(r.payoutPerDollar)}</td>
-                </tr>
-              ))}
-          </tbody>
-        </table>
-      </div>
-
-      <div className="text-xs text-gray-600">
-        Betting status: <span className="font-semibold">{raceLocked ? "Locked" : "Open"}</span>
-      </div>
-    </div>
-  );
+  const formatPayoutPerTenCents = (payoutPerDollar) => {
+    if (!payoutPerDollar || payoutPerDollar <= 0) return "-";
+    return `$${(payoutPerDollar * 0.1).toFixed(2)} per $0.10`;
+  };
 
   const Header = () => (
     <div className="flex items-start justify-between gap-3">
       <div>
         <div className="text-2xl font-black">Betting Terminal</div>
-        <div className="text-sm text-gray-600">Win / Place / Show + Exacta / Trifecta / Superfecta (boxed allowed)</div>
+        <div className="text-sm text-gray-600">Win / Place / Show + Exacta / Trifecta / Superfecta</div>
         <div className="text-xs text-gray-500 mt-1">
           Mode: <span className="font-semibold">{mode}</span> | Sync: <span className="font-semibold">{syncMode}</span>
           {roomCode ? (
@@ -733,7 +710,7 @@ export default function App() {
         </div>
       </div>
 
-      {!kioskMode && mode === "TERMINAL" ? (
+      {mode === "TERMINAL" && !kioskMode ? (
         <div className="flex flex-col sm:flex-row gap-2 items-end">
           <button onClick={newRace} className={buttonSecondary}>New Race</button>
           <button onClick={exportCsv} className={buttonSecondary} disabled={bets.length === 0}>Export CSV</button>
@@ -772,11 +749,11 @@ export default function App() {
 
     return (
       <div className="rounded-2xl border p-4 space-y-3">
-        <div className="font-semibold">Multi-phone live betting</div>
+        <div className="font-semibold">Multi-phone betting</div>
 
         {!cloudReady ? (
           <div className="text-sm text-gray-700">
-            Cloud sync is not enabled yet. To sync all phones, paste your Firebase config into FIREBASE_CONFIG and make sure firebase is in package.json.
+            Cloud sync not ready yet. Make sure package.json includes firebase dependency and redeploy.
           </div>
         ) : null}
 
@@ -787,9 +764,10 @@ export default function App() {
               const rc = randomRoomCode();
               setRoomCode(rc);
               setRoomInput(rc);
+              if (cloudReady) setSyncMode("CLOUD");
             }}
           >
-            Generate room code
+            Generate room
           </button>
 
           <input
@@ -797,6 +775,10 @@ export default function App() {
             value={roomInput}
             onChange={(e) => setRoomInput(e.target.value.toUpperCase())}
             placeholder="Enter room code"
+            inputMode="text"
+            autoCapitalize="characters"
+            autoCorrect="off"
+            autoComplete="off"
           />
 
           <button
@@ -807,9 +789,9 @@ export default function App() {
               if (cloudReady) setSyncMode("CLOUD");
             }}
             disabled={!roomInput || !cloudReady}
-            title={!cloudReady ? "Enable Firebase first" : ""}
+            title={!cloudReady ? "Cloud not ready" : ""}
           >
-            Use room (Cloud)
+            Use room
           </button>
 
           <button
@@ -826,17 +808,39 @@ export default function App() {
 
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 items-start">
           <div className="space-y-2">
-            <div className="text-sm font-semibold">Bettor link</div>
+            <div className="text-sm font-semibold">Bettor QR</div>
             <div className="text-xs text-gray-600 break-all">{bettorUrl || "(loading...)"}</div>
             <canvas ref={qrCanvasRef} className="border rounded-2xl" />
-            <div className="text-xs text-gray-600">Guests scan this QR to bet from any phone.</div>
+            <div className="text-xs text-gray-600">Guests scan this to bet. They must use the same room.</div>
           </div>
-
           <div className="space-y-2">
             <div className="text-sm font-semibold">TV link</div>
             <div className="text-xs text-gray-600 break-all">{tvUrl || "(loading...)"}</div>
-            <div className="text-xs text-gray-600">Open this on the iPad and screen share to the TV.</div>
+            <div className="text-xs text-gray-600">Open this and screen share to your TV.</div>
           </div>
+        </div>
+
+        <div className="rounded-2xl border p-3 space-y-2">
+          <div className="font-semibold text-sm">Terminal / TV graphic</div>
+          <div className="text-xs text-gray-600">
+            Upload a logo, sponsor graphic, or anything you want shown on Terminal and TV views.
+          </div>
+
+          <input
+            type="file"
+            accept="image/*"
+            onChange={(e) => onUploadGraphic(e.target.files?.[0])}
+            className="text-sm"
+          />
+
+          {terminalGraphic ? (
+            <div className="space-y-2">
+              <img src={terminalGraphic} alt="Terminal graphic" className="max-h-40 rounded-2xl border object-contain w-full" />
+              <button onClick={clearGraphic} className={buttonSecondary}>Remove graphic</button>
+            </div>
+          ) : (
+            <div className="text-xs text-gray-600">No graphic uploaded yet.</div>
+          )}
         </div>
       </div>
     );
@@ -849,15 +853,19 @@ export default function App() {
       <div className="rounded-2xl border p-4 space-y-3">
         <div className="flex items-center justify-between gap-3">
           <h2 className="font-semibold">Participants</h2>
-          <div className="text-xs text-gray-600">Participants are also the horses</div>
+          <div className="text-xs text-gray-600">Participants are the horses</div>
         </div>
 
         <div className="flex flex-col sm:flex-row gap-2">
           <input
+            ref={nameInputRef}
             value={nameInput}
             onChange={(e) => setNameInput(e.target.value)}
             placeholder="Add name"
             className={smallInput}
+            autoCorrect="off"
+            autoCapitalize="words"
+            autoComplete="off"
             onKeyDown={(e) => {
               if (e.key === "Enter") addParticipant();
             }}
@@ -888,7 +896,43 @@ export default function App() {
           <div className="text-xs text-gray-600">{raceLocked ? "Locked" : "Open"}</div>
         </div>
 
-        {mode === "BETTOR" ? <LiveOddsMini /> : null}
+        {mode === "BETTOR" ? (
+          <div className="rounded-2xl border p-3 text-sm text-gray-700">
+            <div className="font-semibold">Live race info</div>
+            <div className="mt-1">Participants: {participants.length ? participants.join(", ") : "(none yet)"}</div>
+            <div className="mt-1">
+              Win pool: ${(poolsTotals.WIN ?? 0).toFixed(2)} | Place: ${(poolsTotals.PLACE ?? 0).toFixed(2)} | Show: ${(poolsTotals.SHOW ?? 0).toFixed(2)}
+            </div>
+            <div className="mt-1">Room: {roomCode || "(local)"}</div>
+          </div>
+        ) : null}
+
+        {mode === "TERMINAL" && !kioskMode ? (
+          <div className="flex flex-col sm:flex-row gap-3 sm:items-center sm:justify-between">
+            <div className="font-semibold">Limits</div>
+            <div className="flex flex-col sm:flex-row gap-2 sm:items-center">
+              <label className="flex items-center gap-2 text-sm">
+                <input
+                  type="checkbox"
+                  checked={enforceMaxBet}
+                  onChange={(e) => updateMaxBet({ enforceMaxBet: e.target.checked })}
+                />
+                Enforce max bet
+              </label>
+              <div className="flex items-center gap-2">
+                <span className="text-sm text-gray-700">Max</span>
+                <input
+                  type="number"
+                  className="border rounded-2xl p-2 w-28"
+                  value={maxBet}
+                  onChange={(e) => updateMaxBet({ maxBet: Number(e.target.value) })}
+                  min={0.1}
+                  step={0.1}
+                />
+              </div>
+            </div>
+          </div>
+        ) : null}
 
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
           <div className="space-y-1">
@@ -899,6 +943,9 @@ export default function App() {
                 <option key={p} value={p}>{p}</option>
               ))}
             </select>
+            {participants.length === 0 ? (
+              <div className="text-xs text-red-600">Host must add participants first.</div>
+            ) : null}
           </div>
 
           <div className="space-y-1">
@@ -922,9 +969,30 @@ export default function App() {
                 <option key={t.key} value={t.key}>{t.label}</option>
               ))}
             </select>
+          </div>
+
+          <div className="space-y-1">
+            <div className="text-sm font-medium">Amount (per ticket)</div>
+            <input
+              type="number"
+              className={smallInput}
+              value={amount}
+              onChange={(e) => setAmount(Number(e.target.value))}
+              min={0.1}
+              step={0.1}
+              disabled={raceLocked}
+            />
+            <div className="text-xs text-gray-600">Use $0.10 increments.</div>
+            {enforceMaxBet && amount > maxBet ? (
+              <div className="text-xs text-red-600">Amount exceeds max bet of ${Number(maxBet).toFixed(2)}.</div>
+            ) : null}
+          </div>
+
+          <div className="space-y-2">
+            <div className="text-sm font-medium">Pick(s)</div>
 
             {isExotic ? (
-              <label className="flex items-center gap-2 text-sm mt-2">
+              <label className="flex items-center gap-2 text-sm">
                 <input
                   type="checkbox"
                   checked={boxed}
@@ -939,9 +1007,9 @@ export default function App() {
             ) : null}
 
             {boxed && isExotic ? (
-              <div className="mt-2 space-y-2">
+              <div className="space-y-2">
                 <div className="text-xs text-gray-600">
-                  Select {boxSize} or more horses. Tickets created: {boxCombos.length}. Max 120.
+                  Select {picksNeeded} or more horses. Tickets: {boxCombos.length}. Max 120.
                 </div>
                 <div className="grid grid-cols-2 gap-2">
                   {participants.map((p) => {
@@ -962,52 +1030,28 @@ export default function App() {
                     );
                   })}
                 </div>
-                {boxCombos.length > 120 ? <div className="text-xs text-red-600">Too many tickets. Select fewer horses.</div> : null}
+                {boxCombos.length > 120 ? (
+                  <div className="text-xs text-red-600">Too many tickets. Select fewer horses.</div>
+                ) : null}
               </div>
-            ) : null}
-          </div>
-
-          <div className="space-y-1">
-            <div className="text-sm font-medium">Amount (per ticket)</div>
-            <input
-              type="number"
-              className={smallInput}
-              value={amount}
-              onChange={(e) => setAmount(Number(e.target.value))}
-              min={0.1}
-              step={0.1}
-              disabled={raceLocked}
-            />
-            <div className="text-xs text-gray-600">Use $0.10 increments.</div>
-            {enforceMaxBet && amount > maxBet ? (
-              <div className="text-xs text-red-600">Amount exceeds max bet of ${Number(maxBet).toFixed(2)}.</div>
-            ) : null}
-          </div>
-
-          {!boxed || !isExotic ? (
-            <div className="space-y-2">
-              <div className="text-sm font-medium">Pick(s)</div>
+            ) : (
               <div className="grid grid-cols-1 gap-2">
                 <PickSelect label={picksNeeded === 1 ? "Pick" : "1st"} value={pick1} onChange={setPick1} disabled={raceLocked} />
                 {picksNeeded >= 2 ? <PickSelect label="2nd" value={pick2} onChange={setPick2} disabled={raceLocked} /> : null}
                 {picksNeeded >= 3 ? <PickSelect label="3rd" value={pick3} onChange={setPick3} disabled={raceLocked} /> : null}
                 {picksNeeded >= 4 ? <PickSelect label="4th" value={pick4} onChange={setPick4} disabled={raceLocked} /> : null}
               </div>
-            </div>
-          ) : (
-            <div className="space-y-2">
-              <div className="text-sm font-medium">Pick(s)</div>
-              <div className="text-sm text-gray-700">Boxed bet uses your horse selections above.</div>
-            </div>
-          )}
+            )}
+          </div>
         </div>
 
-        <button onClick={addBet} className={buttonPrimary} disabled={!canAddBet}>
-          Submit bet
-        </button>
-
-        <div className="text-xs text-gray-600">
-          {boxed && isExotic && boxCombos.length > 0 ? `Submitting ${boxCombos.length} tickets at $${Number(amount).toFixed(2)} each.` : null}
+        <div className="flex flex-col sm:flex-row gap-2">
+          <button onClick={addBet} className={buttonPrimary} disabled={!canAddBet}>
+            Submit bet
+          </button>
+          {boxed && isExotic && boxCombos.length > 0 ? (
+            <div className="text-xs text-gray-600 self-center">Submitting {boxCombos.length} tickets.</div>
+          ) : null}
         </div>
       </div>
     );
@@ -1031,28 +1075,6 @@ export default function App() {
             Unlock Betting
           </button>
         </div>
-
-        <div className="flex flex-col sm:flex-row gap-2 sm:items-center">
-          <label className="flex items-center gap-2 text-sm">
-            <input
-              type="checkbox"
-              checked={enforceMaxBet}
-              onChange={(e) => updateMaxBet({ enforceMaxBet: e.target.checked })}
-            />
-            Enforce max bet
-          </label>
-          <div className="flex items-center gap-2">
-            <span className="text-sm text-gray-700">Max</span>
-            <input
-              type="number"
-              className="border rounded-2xl p-2 w-28"
-              value={maxBet}
-              onChange={(e) => updateMaxBet({ maxBet: Number(e.target.value) })}
-              min={0.1}
-              step={0.1}
-            />
-          </div>
-        </div>
       </div>
     );
   };
@@ -1064,51 +1086,14 @@ export default function App() {
       <div className="rounded-2xl border p-4 space-y-3">
         <div className="flex items-center justify-between gap-3">
           <h2 className="font-semibold">Official results</h2>
-          <div className="text-xs text-gray-600">Used for payouts</div>
+          <div className="text-xs text-gray-600">Used for payouts and exotics</div>
         </div>
 
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
           <PickSelect label="1st" value={results.first} onChange={(v) => updateResults({ first: v })} />
           <PickSelect label="2nd" value={results.second} onChange={(v) => updateResults({ second: v })} />
           <PickSelect label="3rd" value={results.third} onChange={(v) => updateResults({ third: v })} />
-          <PickSelect label="4th (Superfecta only)" value={results.fourth} onChange={(v) => updateResults({ fourth: v })} />
-        </div>
-      </div>
-    );
-  };
-
-  const PayoutsPanel = () => {
-    if (mode !== "TERMINAL") return null;
-
-    return (
-      <div className="rounded-2xl border p-4 space-y-4">
-        <h2 className="font-semibold">Payouts (after results)</h2>
-
-        <div className="grid grid-cols-1 gap-3">
-          {BET_TYPES.map((t) => {
-            const p = payoutsByType[t.key];
-            const poolTotal = p?.total ?? 0;
-            const winners = p?.winners ?? [];
-            return (
-              <div key={t.key} className="rounded-2xl border p-3">
-                <div className="flex items-center justify-between">
-                  <div className="font-semibold">{t.label}</div>
-                  <div className="text-sm text-gray-600">Pool: ${poolTotal.toFixed(2)}</div>
-                </div>
-                {winners.length === 0 ? (
-                  <div className="text-sm text-gray-600 mt-2">No winning tickets (or no bets placed).</div>
-                ) : (
-                  <ul className="mt-2 space-y-1">
-                    {winners.map((w) => (
-                      <li key={w.id} className="text-sm">
-                        {w.bettor} receives ${w.split.toFixed(2)}
-                      </li>
-                    ))}
-                  </ul>
-                )}
-              </div>
-            );
-          })}
+          <PickSelect label="4th (Superfecta)" value={results.fourth} onChange={(v) => updateResults({ fourth: v })} />
         </div>
       </div>
     );
@@ -1117,25 +1102,40 @@ export default function App() {
   const TvBoard = () => {
     const header = PUBLIC_BOARDS.find((b) => b.key === boardKey)?.label ?? "Board";
 
-    const formatPayoutPerTenCents = (payoutPerDollar) => {
-      if (!payoutPerDollar || payoutPerDollar <= 0) return "-";
-      return `$${(payoutPerDollar * 0.1).toFixed(2)} per $0.10`;
-    };
+    const rows =
+      boardKey === "WIN" || boardKey === "PLACE" || boardKey === "SHOW"
+        ? horseBoard[boardKey]
+            .slice()
+            .sort((a, b) => b.on - a.on)
+            .map((r) => ({
+              left: r.horse,
+              on: `$${r.on.toFixed(2)}`,
+              odds: formatOdds(r.odds),
+              payout: formatPayoutPerTenCents(r.payoutPerDollar),
+            }))
+        : (boardKey === "EXACTA" ? exoticLeaders.EXACTA : boardKey === "TRIFECTA" ? exoticLeaders.TRIFECTA : exoticLeaders.SUPERFECTA).map((r) => ({
+            left: r.combo,
+            on: `$${r.on.toFixed(2)}`,
+            odds: formatOdds(r.odds),
+            payout: formatPayoutPerTenCents(r.payoutPerDollar),
+          }));
 
     return (
       <div className="min-h-screen bg-white">
         <div className="max-w-6xl mx-auto p-4 sm:p-6 space-y-5">
           <div className="flex items-center justify-between gap-3">
-            <div>
+            <div className="space-y-2">
               <div className="text-3xl font-black">Betting Terminal</div>
-              <div className="text-lg text-gray-700">{header} - live pools, odds, projected payouts</div>
-              {roomCode ? <div className="text-sm text-gray-600">Room {roomCode}</div> : <div className="text-sm text-gray-600">Local</div>}
+              <div className="text-lg text-gray-700">{header} - live pools, odds, payouts</div>
+              {roomCode ? <div className="text-sm text-gray-600">Room {roomCode}</div> : null}
+              {terminalGraphic ? (
+                <img
+                  src={terminalGraphic}
+                  alt="Terminal graphic"
+                  className="max-h-40 rounded-2xl border object-contain w-full"
+                />
+              ) : null}
             </div>
-            {!kioskMode ? (
-              <div className="flex flex-wrap gap-2 justify-end">
-                <button className={buttonSecondary} onClick={() => setMode("TERMINAL")}>Terminal</button>
-              </div>
-            ) : null}
           </div>
 
           <div className="flex flex-wrap gap-2 items-center">
@@ -1167,69 +1167,32 @@ export default function App() {
                   </div>
                 ))}
               </div>
-              <div className="mt-4 text-sm text-gray-600">
-                Projected payout per $0.10 shown (derived from per $1).
-              </div>
             </div>
 
             <div className="rounded-2xl border p-4 lg:col-span-2">
-              {(boardKey === "WIN" || boardKey === "PLACE" || boardKey === "SHOW") ? (
-                <>
-                  <div className="font-semibold text-lg">{header}</div>
-                  <div className="mt-3 overflow-x-auto">
-                    <table className="w-full text-base">
-                      <thead>
-                        <tr className="text-left border-b">
-                          <th className="py-3 pr-3">Horse</th>
-                          <th className="py-3 pr-3">Bet On</th>
-                          <th className="py-3 pr-3">Odds</th>
-                          <th className="py-3">Payout</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {horseBoard[boardKey]
-                          .slice()
-                          .sort((a, b) => b.on - a.on)
-                          .map((r) => (
-                            <tr key={r.horse} className="border-b last:border-b-0">
-                              <td className="py-3 pr-3 font-semibold">{r.horse}</td>
-                              <td className="py-3 pr-3">${r.on.toFixed(2)}</td>
-                              <td className="py-3 pr-3">{formatOdds(r.odds)}</td>
-                              <td className="py-3">{formatPayoutPerTenCents(r.payoutPerDollar)}</td>
-                            </tr>
-                          ))}
-                      </tbody>
-                    </table>
-                  </div>
-                </>
-              ) : (
-                <>
-                  <div className="font-semibold text-lg">{header}</div>
-                  <div className="mt-2 text-sm text-gray-600">Exotics are ordered. Showing most-bet combos.</div>
-                  <div className="mt-3 overflow-x-auto">
-                    <table className="w-full text-base">
-                      <thead>
-                        <tr className="text-left border-b">
-                          <th className="py-3 pr-3">Combo</th>
-                          <th className="py-3 pr-3">Bet On</th>
-                          <th className="py-3 pr-3">Odds</th>
-                          <th className="py-3">Payout</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {(boardKey === "EXACTA" ? exoticLeaders.EXACTA : boardKey === "TRIFECTA" ? exoticLeaders.TRIFECTA : exoticLeaders.SUPERFECTA).rows.map((r) => (
-                          <tr key={r.combo} className="border-b last:border-b-0">
-                            <td className="py-3 pr-3 font-semibold">{r.combo}</td>
-                            <td className="py-3 pr-3">${r.on.toFixed(2)}</td>
-                            <td className="py-3 pr-3">{formatOdds(r.odds)}</td>
-                            <td className="py-3">{formatPayoutPerTenCents(r.payoutPerDollar)}</td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
-                </>
-              )}
+              <div className="font-semibold text-lg">{header}</div>
+              <div className="mt-3 overflow-x-auto">
+                <table className="w-full text-base">
+                  <thead>
+                    <tr className="text-left border-b">
+                      <th className="py-3 pr-3">Outcome</th>
+                      <th className="py-3 pr-3">Bet On</th>
+                      <th className="py-3 pr-3">Odds</th>
+                      <th className="py-3">Payout</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {rows.map((r) => (
+                      <tr key={r.left} className="border-b last:border-b-0">
+                        <td className="py-3 pr-3 font-semibold">{r.left}</td>
+                        <td className="py-3 pr-3">{r.on}</td>
+                        <td className="py-3 pr-3">{r.odds}</td>
+                        <td className="py-3">{r.payout}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
             </div>
           </div>
 
@@ -1252,12 +1215,15 @@ export default function App() {
     );
   };
 
-  // TV mode
   if (mode === "TV") return <TvBoard />;
 
   return (
     <div className="min-h-screen bg-white">
       <div className="max-w-3xl mx-auto p-4 sm:p-6 space-y-6">
+        {terminalGraphic ? (
+          <img src={terminalGraphic} alt="Terminal graphic" className="max-h-40 rounded-2xl border object-contain w-full" />
+        ) : null}
+
         <Header />
         <ModeSwitcher />
         <RoomPanel />
@@ -1267,10 +1233,9 @@ export default function App() {
           <BettingPanel />
           <TerminalControls />
           <ResultsPanel />
-          {mode === "TERMINAL" ? <PayoutsPanel /> : null}
 
           <div className="text-xs text-gray-500 pb-10">
-            If phones are not syncing: Firebase config is missing or guests are not using the same room code in the URL.
+            If a phone shows no names, it is either not in CLOUD mode or it is not using the same room code in the URL.
           </div>
         </div>
       </div>

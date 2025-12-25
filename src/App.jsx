@@ -4,7 +4,7 @@ import QRCode from "qrcode";
 // =====================
 // Firebase (cloud sync)
 // =====================
-// Your Firebase web config (Cloud sync ON).
+// Your Firebase web config (cloud sync ON when you use a room).
 const FIREBASE_CONFIG = {
   apiKey: "AIzaSyBcWTH6h_xDqfxAUYPHm8mXNNb-vMAWgNM",
   authDomain: "betting-terminal.firebaseapp.com",
@@ -14,6 +14,7 @@ const FIREBASE_CONFIG = {
   appId: "1:132647014088:web:f3b6f23cce3cc3849d9ffd",
 };
 
+// These start as null on purpose. They get set inside ensureFirebase().
 let firebaseApp = null;
 let firestore = null;
 let onSnapshotFn = null;
@@ -68,67 +69,62 @@ const PUBLIC_BOARDS = [
   { key: "SUPERFECTA", label: "Superfecta Board" },
 ];
 
-// Theme presets for TV (background + text + accent)
-// These are “common” combinations rather than exact brand standards.
+// TV theme presets (background + text + accent)
 const TV_THEMES = [
   {
     key: "DEFAULT",
-    name: "Default",
+    name: "Default (Light)",
     bg: "#FFFFFF",
     text: "#111827",
     muted: "#6B7280",
     accent: "#111827",
     border: "#E5E7EB",
   },
-  // Texas A&M-ish: maroon + white + subtle gray
   {
     key: "TAMU_MAROON",
-    name: "Texas A&M - Maroon",
+    name: "Texas A&M (Maroon)",
     bg: "#500000",
     text: "#FFFFFF",
-    muted: "#F3F4F6",
+    muted: "rgba(255,255,255,0.85)",
     accent: "#FFFFFF",
-    border: "rgba(255,255,255,0.25)",
+    border: "rgba(255,255,255,0.22)",
   },
   {
-    key: "TAMU_WHITE",
-    name: "Texas A&M - Light",
+    key: "TAMU_LIGHT",
+    name: "Texas A&M (Light)",
     bg: "#FFFFFF",
     text: "#500000",
     muted: "#6B7280",
     accent: "#500000",
     border: "#E5E7EB",
   },
-  // Christmas
   {
     key: "XMAS_CLASSIC",
-    name: "Christmas - Classic",
+    name: "Christmas (Classic)",
     bg: "#0B3D2E",
     text: "#FFFFFF",
-    muted: "#E5E7EB",
+    muted: "rgba(255,255,255,0.85)",
     accent: "#D62828",
     border: "rgba(255,255,255,0.22)",
   },
   {
     key: "XMAS_RED",
-    name: "Christmas - Red",
+    name: "Christmas (Red)",
     bg: "#B91C1C",
     text: "#FFFFFF",
-    muted: "#F3F4F6",
+    muted: "rgba(255,255,255,0.85)",
     accent: "#14532D",
     border: "rgba(255,255,255,0.22)",
   },
-  // Mardi Gras
   {
     key: "MARDI_GRAS",
     name: "Mardi Gras",
     bg: "#2E1065",
     text: "#FFFFFF",
-    muted: "#E5E7EB",
+    muted: "rgba(255,255,255,0.85)",
     accent: "#FBBF24",
     border: "rgba(255,255,255,0.22)",
   },
-  // Halloween
   {
     key: "HALLOWEEN",
     name: "Halloween",
@@ -138,17 +134,15 @@ const TV_THEMES = [
     accent: "#F97316",
     border: "rgba(251,191,36,0.30)",
   },
-  // Fourth of July
   {
     key: "USA",
     name: "4th of July",
     bg: "#0B1F3A",
     text: "#FFFFFF",
-    muted: "#E5E7EB",
+    muted: "rgba(255,255,255,0.85)",
     accent: "#DC2626",
     border: "rgba(255,255,255,0.22)",
   },
-  // Valentine’s
   {
     key: "VALENTINE",
     name: "Valentine’s",
@@ -166,6 +160,7 @@ function themeByKey(key) {
 
 function csvEscape(v) {
   const s = String(v ?? "");
+  // FIXED: correct regex, no broken newline inside it
   if (/[\n\r,"]/g.test(s)) return `"${s.replace(/"/g, '""')}"`;
   return s;
 }
@@ -209,10 +204,10 @@ export default function BettingTerminal() {
   const [mode, setMode] = useState("TERMINAL");
 
   const [baseUrl, setBaseUrl] = useState("");
-  const qrCanvasRef = useRef(null);
+  const [qrDataUrl, setQrDataUrl] = useState("");
 
-  // iPad typing stability
-  const nameInputRef = useRef(null);
+  // iPad input focus stability
+  const addNameRef = useRef(null);
 
   // Kiosk mode hides mode switching on-screen
   const [kioskMode, setKioskMode] = useState(false);
@@ -225,8 +220,14 @@ export default function BettingTerminal() {
   const [roomCode, setRoomCode] = useState("");
   const [roomInput, setRoomInput] = useState("");
 
+  // Optional terminal/TV graphic
+  const [terminalGraphic, setTerminalGraphic] = useState(null); // data URL string
+
+  // TV theme
+  const [tvThemeKey, setTvThemeKey] = useState("DEFAULT");
+
   // Local persistence
-  const STORAGE_KEY = "betting-terminal-state-v6";
+  const STORAGE_KEY = "betting-terminal-state-v7";
   const loadState = () => {
     try {
       const raw = localStorage.getItem(STORAGE_KEY);
@@ -273,9 +274,6 @@ export default function BettingTerminal() {
   const [boardKey, setBoardKey] = useState("WIN");
   const [autoRotate, setAutoRotate] = useState(true);
 
-  // TV theme
-  const [tvThemeKey, setTvThemeKey] = useState(persisted?.tvThemeKey ?? "DEFAULT");
-
   // ---------
   // URL parse
   // ---------
@@ -307,13 +305,18 @@ export default function BettingTerminal() {
     }
   }, []);
 
+  // restore persisted extras
+  useEffect(() => {
+    if (persisted?.terminalGraphic) setTerminalGraphic(persisted.terminalGraphic);
+    if (persisted?.tvThemeKey) setTvThemeKey(persisted.tvThemeKey);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   // Firebase readiness
   useEffect(() => {
     (async () => {
       const ok = await ensureFirebase();
       setCloudReady(ok);
-
-      // If the device loads with ?room=... -> enable cloud automatically
       if (ok) {
         try {
           const params = new URLSearchParams(window.location.search);
@@ -342,11 +345,13 @@ export default function BettingTerminal() {
     return `${baseUrl}?mode=TV${roomPart}${themePart}`;
   }, [baseUrl, roomCode, tvThemeKey]);
 
-  // Generate QR reliably by converting to DataURL (canvas rendering is flaky on some iOS builds)
-  const [qrDataUrl, setQrDataUrl] = useState("");
+  // FIXED: QR via DataURL (more reliable than canvas on iOS)
   useEffect(() => {
     (async () => {
-      if (!bettorUrl) return;
+      if (!bettorUrl) {
+        setQrDataUrl("");
+        return;
+      }
       try {
         const dataUrl = await QRCode.toDataURL(bettorUrl, { width: 220, margin: 1 });
         setQrDataUrl(dataUrl);
@@ -375,6 +380,7 @@ export default function BettingTerminal() {
         boardKey,
         autoRotate,
         kioskMode,
+        terminalGraphic,
         tvThemeKey,
       };
       localStorage.setItem(STORAGE_KEY, JSON.stringify(snapshot));
@@ -395,6 +401,7 @@ export default function BettingTerminal() {
     boardKey,
     autoRotate,
     kioskMode,
+    terminalGraphic,
     tvThemeKey,
   ]);
 
@@ -420,6 +427,7 @@ export default function BettingTerminal() {
         setEnforceMaxBet(data.enforceMaxBet ?? true);
         setMaxBet(Number(data.maxBet ?? 10));
         setResults(data.results ?? { first: "", second: "", third: "", fourth: "" });
+        setTerminalGraphic(data.terminalGraphic ?? null);
         setTvThemeKey(data.tvThemeKey ?? "DEFAULT");
       });
 
@@ -450,7 +458,8 @@ export default function BettingTerminal() {
           enforceMaxBet,
           maxBet: Number(maxBet),
           results,
-          tvThemeKey,
+          terminalGraphic: terminalGraphic ?? null,
+          tvThemeKey: tvThemeKey ?? "DEFAULT",
           updatedAt: serverTimestampFn(),
         },
         { merge: true }
@@ -596,10 +605,10 @@ export default function BettingTerminal() {
     setParticipants(next);
     setNameInput("");
 
-    // Keep focus stable (prevents iPad “one letter at a time” symptom)
+    // FIXED: keep stable focus for iPad Safari typing
     setTimeout(() => {
       try {
-        nameInputRef.current?.focus();
+        addNameRef.current?.focus();
       } catch {
         // ignore
       }
@@ -671,6 +680,7 @@ export default function BettingTerminal() {
   };
 
   const newRace = async () => {
+    // LOCAL: wipe
     if (syncMode !== "CLOUD") {
       setBets([]);
       setResults({ first: "", second: "", third: "", fourth: "" });
@@ -687,6 +697,7 @@ export default function BettingTerminal() {
       return;
     }
 
+    // CLOUD: easiest is new room
     const rc = randomRoomCode();
     setRoomCode(rc);
     setRoomInput(rc);
@@ -697,7 +708,8 @@ export default function BettingTerminal() {
       participants,
       raceLocked: false,
       results: { first: "", second: "", third: "", fourth: "" },
-      tvThemeKey,
+      terminalGraphic: terminalGraphic ?? null,
+      tvThemeKey: tvThemeKey ?? "DEFAULT",
     });
   };
 
@@ -724,7 +736,7 @@ export default function BettingTerminal() {
       lines.push([b.createdAt, b.bettor, b.betType, (b.picks || []).join(" > "), Number(b.amount).toFixed(2)].map(csvEscape).join(","));
     }
 
-    // FIXED: proper newline join
+    // FIXED: correct newline join
     const blob = new Blob([lines.join("\n")], { type: "text/csv;charset=utf-8" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
@@ -734,6 +746,24 @@ export default function BettingTerminal() {
     a.click();
     a.remove();
     URL.revokeObjectURL(url);
+  };
+
+  const onUploadGraphic = async (file) => {
+    if (!file) return;
+    if (!file.type.startsWith("image/")) return;
+
+    const reader = new FileReader();
+    reader.onload = async () => {
+      const dataUrl = String(reader.result || "");
+      setTerminalGraphic(dataUrl);
+      if (syncMode === "CLOUD") await pushRoomUpdate({ terminalGraphic: dataUrl });
+    };
+    reader.readAsDataURL(file);
+  };
+
+  const clearGraphic = async () => {
+    setTerminalGraphic(null);
+    if (syncMode === "CLOUD") await pushRoomUpdate({ terminalGraphic: null });
   };
 
   // TV auto rotate
@@ -778,8 +808,6 @@ export default function BettingTerminal() {
     if (!payoutPerDollar || payoutPerDollar <= 0) return "-";
     return `$${(payoutPerDollar * 0.1).toFixed(2)} per $0.10`;
   };
-
-  const theme = themeByKey(tvThemeKey);
 
   const Header = () => (
     <div className="flex items-start justify-between gap-3">
@@ -839,7 +867,7 @@ export default function BettingTerminal() {
 
         {!cloudReady ? (
           <div className="text-sm text-gray-700">
-            Cloud sync not ready yet. Ensure package.json has firebase dependency, then redeploy.
+            Cloud sync not ready yet. Make sure package.json includes firebase and redeploy.
           </div>
         ) : null}
 
@@ -894,18 +922,36 @@ export default function BettingTerminal() {
 
         <div className="rounded-2xl border p-3 space-y-2">
           <div className="text-sm font-semibold">TV theme</div>
-          <select
-            className={smallSelect}
-            value={tvThemeKey}
-            onChange={(e) => setTvTheme(e.target.value)}
-          >
+          <select className={smallSelect} value={tvThemeKey} onChange={(e) => setTvTheme(e.target.value)}>
             {TV_THEMES.map((t) => (
-              <option key={t.key} value={t.key}>{t.name}</option>
+              <option key={t.key} value={t.key}>
+                {t.name}
+              </option>
             ))}
           </select>
           <div className="text-xs text-gray-600">
-            The TV link includes the theme automatically.
+            TV link includes the theme: {tvThemeKey}
           </div>
+        </div>
+
+        <div className="rounded-2xl border p-3 space-y-2">
+          <div className="font-semibold text-sm">Terminal / TV graphic</div>
+          <div className="text-xs text-gray-600">
+            Upload a logo or graphic shown on Terminal and TV.
+          </div>
+
+          <input type="file" accept="image/*" onChange={(e) => onUploadGraphic(e.target.files?.[0])} className="text-sm" />
+
+          {terminalGraphic ? (
+            <div className="space-y-2">
+              <img src={terminalGraphic} alt="Terminal graphic" className="max-h-40 rounded-2xl border object-contain w-full" />
+              <button onClick={clearGraphic} className={buttonSecondary}>
+                Remove graphic
+              </button>
+            </div>
+          ) : (
+            <div className="text-xs text-gray-600">No graphic uploaded yet.</div>
+          )}
         </div>
 
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 items-start">
@@ -915,9 +961,9 @@ export default function BettingTerminal() {
             {qrDataUrl ? (
               <img src={qrDataUrl} alt="Bettor QR" className="border rounded-2xl w-[220px] h-[220px]" />
             ) : (
-              <div className="text-xs text-red-600">QR not ready - check that qrcode dependency is installed.</div>
+              <div className="text-xs text-red-600">QR not ready - confirm qrcode dependency is installed.</div>
             )}
-            <div className="text-xs text-gray-600">Guests scan this to bet (must include the same room).</div>
+            <div className="text-xs text-gray-600">Guests must use the same room code to see participants.</div>
           </div>
           <div className="space-y-2">
             <div className="text-sm font-semibold">TV link</div>
@@ -941,7 +987,7 @@ export default function BettingTerminal() {
 
         <div className="flex flex-col sm:flex-row gap-2">
           <input
-            ref={nameInputRef}
+            ref={addNameRef}
             value={nameInput}
             onChange={(e) => setNameInput(e.target.value)}
             placeholder="Add name"
@@ -953,7 +999,9 @@ export default function BettingTerminal() {
               if (e.key === "Enter") addParticipant();
             }}
           />
-          <button onClick={addParticipant} className={buttonPrimary}>Add</button>
+          <button onClick={addParticipant} className={buttonPrimary}>
+            Add
+          </button>
         </div>
 
         <div className="flex flex-wrap gap-2">
@@ -961,7 +1009,9 @@ export default function BettingTerminal() {
             <div className="text-sm text-gray-600">Add at least 2 participants.</div>
           ) : (
             participants.map((p) => (
-              <span key={p} className="px-3 py-1 rounded-full border text-sm">{p}</span>
+              <span key={p} className="px-3 py-1 rounded-full border text-sm">
+                {p}
+              </span>
             ))
           )}
         </div>
@@ -982,26 +1032,193 @@ export default function BettingTerminal() {
         {mode === "BETTOR" ? (
           <div className="rounded-2xl border p-3 text-sm text-gray-700">
             <div className="font-semibold">Live race info</div>
-            <div className="mt-1">Participants: {participants.length ? participants.join(", ") : "(none yet)"} </div>
+            <div className="mt-1">Participants: {participants.length ? participants.join(", ") : "(none yet)"}</div>
             <div className="mt-1">
               Win pool: ${(poolsTotals.WIN ?? 0).toFixed(2)} | Place: ${(poolsTotals.PLACE ?? 0).toFixed(2)} | Show: ${(poolsTotals.SHOW ?? 0).toFixed(2)}
             </div>
             <div className="mt-1">Room: {roomCode || "(local)"} | Sync: {syncMode}</div>
-            {participants.length === 0 && roomCode ? (
-              <div className="mt-1 text-xs text-red-600">
-                If this stays empty, the iPad must be in the same room code and in Cloud mode.
-              </div>
-            ) : null}
           </div>
         ) : null}
 
-        {/* Bettor pick UI (unchanged from your current version, omitted here for brevity) */}
-        {/* To keep this response readable, I kept the full behavior but trimmed repeated UI.
-            If you want the FULL betting UI exactly as before, tell me and I will paste the full file with no trimming.
-            For now, this build is focused on fixing your three bugs and improving TV theme support. */}
-        <div className="text-sm text-gray-700">
-          Betting UI removed in this snippet to keep it short.
-          Tell me and I will paste the full file with the complete BettingPanel controls.
+        {mode === "TERMINAL" && !kioskMode ? (
+          <div className="flex flex-col sm:flex-row gap-3 sm:items-center sm:justify-between">
+            <div className="font-semibold">Limits</div>
+            <div className="flex flex-col sm:flex-row gap-2 sm:items-center">
+              <label className="flex items-center gap-2 text-sm">
+                <input type="checkbox" checked={enforceMaxBet} onChange={(e) => updateMaxBet({ enforceMaxBet: e.target.checked })} />
+                Enforce max bet
+              </label>
+              <div className="flex items-center gap-2">
+                <span className="text-sm text-gray-700">Max</span>
+                <input
+                  type="number"
+                  className="border rounded-2xl p-2 w-28"
+                  value={maxBet}
+                  onChange={(e) => updateMaxBet({ maxBet: Number(e.target.value) })}
+                  min={0.1}
+                  step={0.1}
+                />
+              </div>
+            </div>
+          </div>
+        ) : null}
+
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+          <div className="space-y-1">
+            <div className="text-sm font-medium">Your name</div>
+            <select className={smallSelect} value={bettor} onChange={(e) => setBettor(e.target.value)} disabled={raceLocked}>
+              <option value="">Select</option>
+              {participants.map((p) => (
+                <option key={p} value={p}>
+                  {p}
+                </option>
+              ))}
+            </select>
+            {participants.length === 0 ? <div className="text-xs text-red-600">Host must add participants first.</div> : null}
+          </div>
+
+          <div className="space-y-1">
+            <div className="text-sm font-medium">Bet type</div>
+            <select
+              className={smallSelect}
+              value={betType}
+              onChange={(e) => {
+                const t = e.target.value;
+                setBetType(t);
+                setPick1("");
+                setPick2("");
+                setPick3("");
+                setPick4("");
+                setBoxed(false);
+                setBoxHorses([]);
+              }}
+              disabled={raceLocked}
+            >
+              {BET_TYPES.map((t) => (
+                <option key={t.key} value={t.key}>
+                  {t.label}
+                </option>
+              ))}
+            </select>
+          </div>
+
+          <div className="space-y-1">
+            <div className="text-sm font-medium">Amount (per ticket)</div>
+            <input
+              type="number"
+              className={smallInput}
+              value={amount}
+              onChange={(e) => setAmount(Number(e.target.value))}
+              min={0.1}
+              step={0.1}
+              disabled={raceLocked}
+            />
+            <div className="text-xs text-gray-600">Use $0.10 increments.</div>
+            {enforceMaxBet && amount > maxBet ? <div className="text-xs text-red-600">Amount exceeds max bet of ${Number(maxBet).toFixed(2)}.</div> : null}
+          </div>
+
+          <div className="space-y-2">
+            <div className="text-sm font-medium">Pick(s)</div>
+
+            {isExotic ? (
+              <label className="flex items-center gap-2 text-sm">
+                <input
+                  type="checkbox"
+                  checked={boxed}
+                  onChange={(e) => {
+                    setBoxed(e.target.checked);
+                    setBoxHorses([]);
+                  }}
+                  disabled={raceLocked}
+                />
+                Box (any order)
+              </label>
+            ) : null}
+
+            {boxed && isExotic ? (
+              <div className="space-y-2">
+                <div className="text-xs text-gray-600">
+                  Select {picksNeeded} or more horses. Tickets: {boxCombos.length}. Max 120.
+                </div>
+                <div className="grid grid-cols-2 gap-2">
+                  {participants.map((p) => {
+                    const checked = boxHorses.includes(p);
+                    return (
+                      <label key={p} className="flex items-center gap-2 text-sm border rounded-2xl p-2">
+                        <input
+                          type="checkbox"
+                          checked={checked}
+                          onChange={(e) => {
+                            if (e.target.checked) setBoxHorses((h) => [...h, p]);
+                            else setBoxHorses((h) => h.filter((x) => x !== p));
+                          }}
+                          disabled={raceLocked}
+                        />
+                        {p}
+                      </label>
+                    );
+                  })}
+                </div>
+                {boxCombos.length > 120 ? <div className="text-xs text-red-600">Too many tickets. Select fewer horses.</div> : null}
+              </div>
+            ) : (
+              <div className="grid grid-cols-1 gap-2">
+                <PickSelect label={picksNeeded === 1 ? "Pick" : "1st"} value={pick1} onChange={setPick1} disabled={raceLocked} />
+                {picksNeeded >= 2 ? <PickSelect label="2nd" value={pick2} onChange={setPick2} disabled={raceLocked} /> : null}
+                {picksNeeded >= 3 ? <PickSelect label="3rd" value={pick3} onChange={setPick3} disabled={raceLocked} /> : null}
+                {picksNeeded >= 4 ? <PickSelect label="4th"} value={pick4} onChange={setPick4} disabled={raceLocked} /> : null}
+              </div>
+            )}
+          </div>
+        </div>
+
+        <div className="flex flex-col sm:flex-row gap-2">
+          <button onClick={addBet} className={buttonPrimary} disabled={!canAddBet}>
+            Submit bet
+          </button>
+          {boxed && isExotic && boxCombos.length > 0 ? <div className="text-xs text-gray-600 self-center">Submitting {boxCombos.length} tickets.</div> : null}
+        </div>
+      </div>
+    );
+  };
+
+  const TerminalControls = () => {
+    if (mode !== "TERMINAL" || kioskMode) return null;
+
+    return (
+      <div className="rounded-2xl border p-4 space-y-3">
+        <div className="flex items-center justify-between gap-3">
+          <h2 className="font-semibold">Race control</h2>
+          <div className="text-xs text-gray-600">Lock betting once the squeeze starts</div>
+        </div>
+
+        <div className="flex flex-col sm:flex-row gap-2">
+          <button onClick={() => lockRace(true)} className={buttonSecondary} disabled={raceLocked || bets.length === 0}>
+            Lock Betting
+          </button>
+          <button onClick={() => lockRace(false)} className={buttonSecondary} disabled={!raceLocked}>
+            Unlock Betting
+          </button>
+        </div>
+      </div>
+    );
+  };
+
+  const ResultsPanel = () => {
+    if (mode !== "TERMINAL" || kioskMode) return null;
+
+    return (
+      <div className="rounded-2xl border p-4 space-y-3">
+        <div className="flex items-center justify-between gap-3">
+          <h2 className="font-semibold">Official results</h2>
+          <div className="text-xs text-gray-600">Used for payouts and exotics</div>
+        </div>
+
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+          <PickSelect label="1st" value={results.first} onChange={(v) => updateResults({ first: v })} />
+          <PickSelect label="2nd" value={results.second} onChange={(v) => updateResults({ second: v })} />
+          <PickSelect label="3rd" value={results.third} onChange={(v) => updateResults({ third: v })} />
+          <PickSelect label="4th (Superfecta)" value={results.fourth} onChange={(v) => updateResults({ fourth: v })} />
         </div>
       </div>
     );
@@ -1033,10 +1250,19 @@ export default function BettingTerminal() {
       <div className="min-h-screen" style={{ background: t.bg, color: t.text }}>
         <div className="max-w-6xl mx-auto p-4 sm:p-6 space-y-5">
           <div className="flex items-center justify-between gap-3">
-            <div>
+            <div className="space-y-2">
               <div className="text-3xl font-black">Betting Terminal</div>
-              <div className="text-lg" style={{ color: t.muted }}>{header} - live pools, odds, payouts</div>
-              {roomCode ? <div className="text-sm" style={{ color: t.muted }}>Room {roomCode}</div> : null}
+              <div className="text-lg" style={{ color: t.muted }}>
+                {header} - live pools, odds, payouts
+              </div>
+              {roomCode ? (
+                <div className="text-sm" style={{ color: t.muted }}>
+                  Room {roomCode}
+                </div>
+              ) : null}
+              {terminalGraphic ? (
+                <img src={terminalGraphic} alt="TV graphic" className="max-h-40 rounded-2xl border object-contain w-full" style={{ borderColor: t.border }} />
+              ) : null}
             </div>
           </div>
 
@@ -1049,13 +1275,13 @@ export default function BettingTerminal() {
               {PUBLIC_BOARDS.map((b) => (
                 <button
                   key={b.key}
-                  style={{
-                    border: `1px solid ${t.border}`,
-                    color: boardKey === b.key ? t.bg : t.text,
-                    background: boardKey === b.key ? t.accent : "transparent",
-                  }}
                   className="rounded-2xl px-4 py-2 text-sm font-semibold"
                   onClick={() => setBoardKey(b.key)}
+                  style={{
+                    border: `1px solid ${t.border}`,
+                    background: boardKey === b.key ? t.accent : "transparent",
+                    color: boardKey === b.key ? t.bg : t.text,
+                  }}
                 >
                   {b.label}
                 </button>
@@ -1105,26 +1331,51 @@ export default function BettingTerminal() {
               </div>
             </div>
           </div>
+
+          <div className="rounded-2xl p-4" style={{ border: `1px solid ${t.border}` }}>
+            <div className="font-semibold text-lg">Official Results</div>
+            <div className="mt-3 grid grid-cols-2 sm:grid-cols-4 gap-3 text-base">
+              {["first", "second", "third", "fourth"].map((k, idx) => (
+                <div key={k} className="rounded-2xl p-3" style={{ border: `1px solid ${t.border}` }}>
+                  <div className="text-sm" style={{ color: t.muted }}>
+                    {idx + 1}
+                    {idx === 0 ? "st" : idx === 1 ? "nd" : idx === 2 ? "rd" : "th"}
+                  </div>
+                  <div className="font-bold text-xl">{results[k] || "-"}</div>
+                </div>
+              ))}
+            </div>
+          </div>
         </div>
       </div>
     );
   };
 
+  // -----------------
   // Render
+  // -----------------
   if (mode === "TV") return <TvBoard />;
 
-  // NOTE: BettingPanel in this shortened file is minimal.
-  // If you want the FULL betting UI restored, tell me and I will paste the complete file in one shot.
   return (
     <div className="min-h-screen bg-white">
       <div className="max-w-3xl mx-auto p-4 sm:p-6 space-y-6">
+        {terminalGraphic ? (
+          <img src={terminalGraphic} alt="Terminal graphic" className="max-h-40 rounded-2xl border object-contain w-full" />
+        ) : null}
+
         <Header />
         <ModeSwitcher />
         <RoomPanel />
-        <ParticipantsPanel />
-        <BettingPanel />
-        <div className="text-xs text-gray-500 pb-10">
-          If the phone shows no names, ensure: iPad generated a room, iPhone URL includes &room=THECODE, and Cloud is ready.
+
+        <div className="grid gap-6">
+          <ParticipantsPanel />
+          <BettingPanel />
+          <TerminalControls />
+          <ResultsPanel />
+
+          <div className="text-xs text-gray-500 pb-10">
+            Phone not seeing names usually means: iPad must Generate/Use room, and phone must open the QR link that includes &room=THECODE.
+          </div>
         </div>
       </div>
     </div>

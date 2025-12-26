@@ -13,7 +13,6 @@ const FIREBASE_CONFIG = {
   appId: "1:132647014088:web:f3b6f23cce3cc3849d9ffd",
 };
 
-let firebaseApp = null;
 let firestore = null;
 let onSnapshotFn = null;
 let docFn = null;
@@ -26,14 +25,13 @@ let orderByFn = null;
 let serverTimestampFn = null;
 
 async function ensureFirebase() {
-  if (!FIREBASE_CONFIG) return false;
   if (firestore) return true;
 
   const fbApp = await import("firebase/app");
   const fbFs = await import("firebase/firestore");
 
-  firebaseApp = fbApp.initializeApp(FIREBASE_CONFIG);
-  firestore = fbFs.getFirestore(firebaseApp);
+  const app = fbApp.initializeApp(FIREBASE_CONFIG);
+  firestore = fbFs.getFirestore(app);
 
   onSnapshotFn = fbFs.onSnapshot;
   docFn = fbFs.doc;
@@ -60,65 +58,26 @@ const BET_TYPES = [
   { key: "SUPERFECTA", label: "Superfecta" },
 ];
 
-const PUBLIC_BOARDS = [
-  { key: "WIN", label: "Win Board" },
-  { key: "PLACE", label: "Place Board" },
-  { key: "SHOW", label: "Show Board" },
-  { key: "EXACTA", label: "Exacta Board" },
-  { key: "TRIFECTA", label: "Trifecta Board" },
-  { key: "SUPERFECTA", label: "Superfecta Board" },
-];
+const PUBLIC_BOARDS = ["WIN", "PLACE", "SHOW", "EXACTA", "TRIFECTA", "SUPERFECTA"];
 
 const DENOMS = [0.1, 0.25, 0.5, 1];
 
 const TV_THEMES = [
-  {
-    key: "DEFAULT",
-    name: "Default (Light)",
-    bg: "#FFFFFF",
-    text: "#111827",
-    muted: "#6B7280",
-    accent: "#111827",
-    border: "#E5E7EB",
-  },
-  {
-    key: "TAMU_MAROON",
-    name: "Texas A&M (Maroon)",
-    bg: "#500000",
-    text: "#FFFFFF",
-    muted: "rgba(255,255,255,0.85)",
-    accent: "#FFFFFF",
-    border: "rgba(255,255,255,0.22)",
-  },
-  {
-    key: "XMAS_CLASSIC",
-    name: "Christmas (Classic)",
-    bg: "#0B3D2E",
-    text: "#FFFFFF",
-    muted: "rgba(255,255,255,0.85)",
-    accent: "#D62828",
-    border: "rgba(255,255,255,0.22)",
-  },
-  {
-    key: "MARDI_GRAS",
-    name: "Mardi Gras",
-    bg: "#2E1065",
-    text: "#FFFFFF",
-    muted: "rgba(255,255,255,0.85)",
-    accent: "#FBBF24",
-    border: "rgba(255,255,255,0.22)",
-  },
+  { key: "DEFAULT", name: "Default", bg: "#FFFFFF", text: "#111827", muted: "#6B7280", accent: "#111827", border: "#E5E7EB" },
+  { key: "TAMU_MAROON", name: "Texas A&M", bg: "#500000", text: "#FFFFFF", muted: "rgba(255,255,255,0.85)", accent: "#FFFFFF", border: "rgba(255,255,255,0.22)" },
+  { key: "XMAS_CLASSIC", name: "Christmas", bg: "#0B3D2E", text: "#FFFFFF", muted: "rgba(255,255,255,0.85)", accent: "#D62828", border: "rgba(255,255,255,0.22)" },
+  { key: "MARDI_GRAS", name: "Mardi Gras", bg: "#2E1065", text: "#FFFFFF", muted: "rgba(255,255,255,0.85)", accent: "#FBBF24", border: "rgba(255,255,255,0.22)" },
 ];
 
 function themeByKey(key) {
   return TV_THEMES.find((t) => t.key === key) ?? TV_THEMES[0];
 }
 
-// No regex literals - avoids the previous Vercel “unterminated regex” class of issues.
+// No regex literals to avoid build issues
 function csvEscape(v) {
   const s = String(v ?? "");
-  const needsQuotes = s.includes("\n") || s.includes("\r") || s.includes(",") || s.includes('"');
-  if (!needsQuotes) return s;
+  const needs = s.includes("\n") || s.includes("\r") || s.includes(",") || s.includes('"');
+  if (!needs) return s;
   return `"${s.split('"').join('""')}"`;
 }
 
@@ -160,62 +119,52 @@ export default function BettingTerminal() {
   const [baseUrl, setBaseUrl] = useState("");
   const [qrDataUrl, setQrDataUrl] = useState("");
 
-  const addNameRef = useRef(null);
-
   const [cloudReady, setCloudReady] = useState(false);
   const [syncMode, setSyncMode] = useState("LOCAL"); // LOCAL | CLOUD
 
   const [roomCode, setRoomCode] = useState("");
   const [roomInput, setRoomInput] = useState("");
 
-  const [terminalGraphic, setTerminalGraphic] = useState(null); // data URL string
-  const [tvThemeKey, setTvThemeKey] = useState("DEFAULT");
-
-  // Persistent local fallback (so TV can show image even if cloud hiccups)
-  const STORAGE_KEY = "betting-terminal-state-v12";
-  const loadState = () => {
+  const STORAGE_KEY = "betting-terminal-state-v13";
+  const persisted = useMemo(() => {
     try {
       const raw = localStorage.getItem(STORAGE_KEY);
-      if (!raw) return null;
-      return JSON.parse(raw);
+      return raw ? JSON.parse(raw) : null;
     } catch {
       return null;
     }
-  };
-  const persisted = typeof window !== "undefined" ? loadState() : null;
+  }, []);
 
   const [participants, setParticipants] = useState(persisted?.participants ?? []);
-  const [nameInput, setNameInput] = useState("");
-
   const [bets, setBets] = useState(persisted?.bets ?? []);
+  const [raceLocked, setRaceLocked] = useState(persisted?.raceLocked ?? false);
+  const [results, setResults] = useState(persisted?.results ?? { first: "", second: "", third: "", fourth: "" });
 
-  const [betType, setBetType] = useState(persisted?.betType ?? "WIN");
-  const [bettor, setBettor] = useState(persisted?.bettor ?? "");
+  const [terminalGraphic, setTerminalGraphic] = useState(persisted?.terminalGraphic ?? null);
+  const [tvThemeKey, setTvThemeKey] = useState(persisted?.tvThemeKey ?? "DEFAULT");
 
-  const [denom, setDenom] = useState(persisted?.denom ?? 0.1);
-  const amount = denom;
+  const [betType, setBetType] = useState("WIN");
+  const [bettor, setBettor] = useState("");
+  const [denom, setDenom] = useState(0.1);
+
+  const [nameInput, setNameInput] = useState("");
+  const nameInputRef = useRef(null);
+
+  const [boxed, setBoxed] = useState(false);
+  const [boxHorses, setBoxHorses] = useState([]);
 
   const [pick1, setPick1] = useState("");
   const [pick2, setPick2] = useState("");
   const [pick3, setPick3] = useState("");
   const [pick4, setPick4] = useState("");
 
-  const [boxed, setBoxed] = useState(false);
-  const [boxHorses, setBoxHorses] = useState([]);
-
-  const [raceLocked, setRaceLocked] = useState(false);
-
   const [enforceMaxBet, setEnforceMaxBet] = useState(true);
   const [maxBet, setMaxBet] = useState(10);
-
-  const [results, setResults] = useState({ first: "", second: "", third: "", fourth: "" });
 
   const [boardKey, setBoardKey] = useState("WIN");
   const [autoRotate, setAutoRotate] = useState(true);
 
-  // ---------
-  // URL parse
-  // ---------
+  // Parse URL once
   useEffect(() => {
     try {
       const params = new URLSearchParams(window.location.search);
@@ -244,40 +193,23 @@ export default function BettingTerminal() {
     }
   }, []);
 
-  // restore local extras
-  useEffect(() => {
-    if (persisted?.terminalGraphic) setTerminalGraphic(persisted.terminalGraphic);
-    if (persisted?.tvThemeKey) setTvThemeKey(persisted.tvThemeKey);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
-  // Firebase readiness
+  // Firebase ready
   useEffect(() => {
     (async () => {
       const ok = await ensureFirebase();
       setCloudReady(ok);
-      if (ok) {
-        try {
-          const params = new URLSearchParams(window.location.search);
-          const qRoom = params.get("room");
-          if (qRoom) setSyncMode("CLOUD");
-        } catch {
-          // ignore
-        }
-      } else {
-        setSyncMode("LOCAL");
-      }
+      if (ok && roomCode) setSyncMode("CLOUD");
     })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // If room present and cloud ready, force CLOUD
   useEffect(() => {
     if (!cloudReady) return;
     if (!roomCode) return;
     setSyncMode("CLOUD");
   }, [cloudReady, roomCode]);
 
-  // Links
+  // Build bettor/TV URLs
   const bettorUrl = useMemo(() => {
     if (!baseUrl) return "";
     const roomPart = roomCode ? `&room=${encodeURIComponent(roomCode)}` : "";
@@ -307,101 +239,78 @@ export default function BettingTerminal() {
     })();
   }, [bettorUrl]);
 
-  // -----------------
-  // Always persist locally as fallback (even in CLOUD)
-  // -----------------
+  // Persist locally always (fallback + prevents “lost state” if cloud hiccups)
   useEffect(() => {
     try {
-      const snapshot = {
-        participants,
-        bets,
-        betType,
-        bettor,
-        denom,
-        raceLocked,
-        enforceMaxBet,
-        maxBet,
-        results,
-        boardKey,
-        autoRotate,
-        terminalGraphic,
-        tvThemeKey,
-      };
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(snapshot));
+      localStorage.setItem(
+        STORAGE_KEY,
+        JSON.stringify({
+          participants,
+          bets,
+          raceLocked,
+          results,
+          terminalGraphic,
+          tvThemeKey,
+          denom,
+          enforceMaxBet,
+          maxBet,
+        })
+      );
     } catch {
       // ignore
     }
-  }, [
-    participants,
-    bets,
-    betType,
-    bettor,
-    denom,
-    raceLocked,
-    enforceMaxBet,
-    maxBet,
-    results,
-    boardKey,
-    autoRotate,
-    terminalGraphic,
-    tvThemeKey,
-  ]);
+  }, [participants, bets, raceLocked, results, terminalGraphic, tvThemeKey, denom, enforceMaxBet, maxBet]);
 
-  // -----------------
-  // Cloud subscription
-  // -----------------
+  // Cloud subscribe
   useEffect(() => {
     if (!cloudReady) return;
     if (syncMode !== "CLOUD") return;
     if (!roomCode) return;
 
-    let unsubRoom = null;
-    let unsubBets = null;
+    const roomRef = docFn(firestore, "rooms", roomCode);
+    const betsRef = collectionFn(firestore, "rooms", roomCode, "bets");
 
-    (async () => {
-      const roomRef = docFn(firestore, "rooms", roomCode);
+    const unsubRoom = onSnapshotFn(roomRef, (snap) => {
+      const data = snap.data();
+      if (!data) return;
+      setParticipants(Array.isArray(data.participants) ? data.participants : []);
+      setRaceLocked(!!data.raceLocked);
+      setResults(data.results ?? { first: "", second: "", third: "", fourth: "" });
+      setTerminalGraphic(data.terminalGraphic ?? null);
+      setTvThemeKey(data.tvThemeKey ?? "DEFAULT");
+      setEnforceMaxBet(data.enforceMaxBet ?? true);
+      setMaxBet(Number(data.maxBet ?? 10));
+    });
 
-      unsubRoom = onSnapshotFn(roomRef, (snap) => {
-        const data = snap.data();
-        if (!data) return;
-        setParticipants(Array.isArray(data.participants) ? data.participants : []);
-        setRaceLocked(!!data.raceLocked);
-        setEnforceMaxBet(data.enforceMaxBet ?? true);
-        setMaxBet(Number(data.maxBet ?? 10));
-        setResults(data.results ?? { first: "", second: "", third: "", fourth: "" });
-        setTerminalGraphic(data.terminalGraphic ?? null);
-        setTvThemeKey(data.tvThemeKey ?? "DEFAULT");
-      });
-
-      const betsRef = collectionFn(firestore, "rooms", roomCode, "bets");
-      const q = queryFn(betsRef, orderByFn("createdAt", "asc"));
-      unsubBets = onSnapshotFn(q, (qs) => {
-        const rows = [];
-        qs.forEach((d) => {
-          const v = d.data();
-          rows.push({
-            id: d.id,
-            createdAt: v.createdAt?.toDate ? v.createdAt.toDate().toISOString() : new Date().toISOString(),
-            bettor: v.bettor,
-            amount: Number(v.amount ?? 0),
-            betType: v.betType,
-            picks: Array.isArray(v.picks) ? v.picks : [],
-          });
+    const q = queryFn(betsRef, orderByFn("createdAt", "asc"));
+    const unsubBets = onSnapshotFn(q, (qs) => {
+      const rows = [];
+      qs.forEach((d) => {
+        const v = d.data();
+        rows.push({
+          id: d.id,
+          createdAt: v.createdAt?.toDate ? v.createdAt.toDate().toISOString() : new Date().toISOString(),
+          bettor: v.bettor,
+          amount: Number(v.amount ?? 0),
+          betType: v.betType,
+          picks: Array.isArray(v.picks) ? v.picks : [],
         });
-        setBets(rows);
       });
+      setBets(rows);
+    });
 
-      // Ensure doc exists (important so new room immediately has participants/graphic)
+    // Ensure room doc exists
+    (async () => {
       await setDocFn(
         roomRef,
         {
           participants,
           raceLocked,
-          enforceMaxBet,
-          maxBet: Number(maxBet),
           results,
           terminalGraphic: terminalGraphic ?? null,
-          tvThemeKey: tvThemeKey ?? "DEFAULT",
+          tvThemeKey,
+          enforceMaxBet,
+          maxBet: Number(maxBet),
           updatedAt: serverTimestampFn(),
         },
         { merge: true }
@@ -409,23 +318,19 @@ export default function BettingTerminal() {
     })();
 
     return () => {
-      if (unsubRoom) unsubRoom();
-      if (unsubBets) unsubBets();
+      unsubRoom();
+      unsubBets();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [cloudReady, syncMode, roomCode]);
 
   const pushRoomUpdate = async (patch) => {
-    if (!cloudReady || syncMode !== "CLOUD" || !roomCode) return;
+    if (!(cloudReady && syncMode === "CLOUD" && roomCode)) return;
     const roomRef = docFn(firestore, "rooms", roomCode);
     await setDocFn(roomRef, { ...patch, updatedAt: serverTimestampFn() }, { merge: true });
   };
 
-  // -----------------
-  // Derived
-  // -----------------
-  const isExotic = betType === "EXACTA" || betType === "TRIFECTA" || betType === "SUPERFECTA";
-
+  // ---------- Betting helpers ----------
   const picksNeeded = useMemo(() => {
     if (betType === "WIN" || betType === "PLACE" || betType === "SHOW") return 1;
     if (betType === "EXACTA") return 2;
@@ -434,7 +339,12 @@ export default function BettingTerminal() {
     return 1;
   }, [betType]);
 
-  const currentPicks = useMemo(() => [pick1, pick2, pick3, pick4].slice(0, picksNeeded), [pick1, pick2, pick3, pick4, picksNeeded]);
+  const isExotic = betType === "EXACTA" || betType === "TRIFECTA" || betType === "SUPERFECTA";
+
+  const currentPicks = useMemo(
+    () => [pick1, pick2, pick3, pick4].slice(0, picksNeeded),
+    [pick1, pick2, pick3, pick4, picksNeeded]
+  );
 
   const boxCombos = useMemo(() => {
     if (!boxed || !isExotic) return [];
@@ -446,8 +356,8 @@ export default function BettingTerminal() {
   const canAddBet = useMemo(() => {
     if (raceLocked) return false;
     if (!bettor) return false;
-    if (!amount || amount <= 0) return false;
-    if (enforceMaxBet && amount > maxBet) return false;
+    if (!denom || denom <= 0) return false;
+    if (enforceMaxBet && denom > maxBet) return false;
 
     if (boxed && isExotic) {
       if (boxCombos.length === 0) return false;
@@ -458,11 +368,11 @@ export default function BettingTerminal() {
     if (currentPicks.some((p) => !p)) return false;
     if (new Set(currentPicks).size !== currentPicks.length) return false;
     return true;
-  }, [raceLocked, bettor, amount, enforceMaxBet, maxBet, boxed, isExotic, boxCombos.length, currentPicks]);
+  }, [raceLocked, bettor, denom, enforceMaxBet, maxBet, boxed, isExotic, boxCombos.length, currentPicks]);
 
+  // Pools + odds tables
   const poolsTotals = useMemo(() => {
-    const totals = {};
-    for (const t of BET_TYPES.map((x) => x.key)) totals[t] = 0;
+    const totals = { WIN: 0, PLACE: 0, SHOW: 0, EXACTA: 0, TRIFECTA: 0, SUPERFECTA: 0 };
     for (const b of bets) {
       if (!b?.betType) continue;
       if (totals[b.betType] === undefined) totals[b.betType] = 0;
@@ -473,7 +383,6 @@ export default function BettingTerminal() {
 
   const totalAllBets = useMemo(() => bets.reduce((s, b) => s + Number(b.amount || 0), 0), [bets]);
 
-  // odds boards
   const amountsOn = useMemo(() => {
     const out = {
       WIN: new Map(),
@@ -483,13 +392,12 @@ export default function BettingTerminal() {
       TRIFECTA: new Map(),
       SUPERFECTA: new Map(),
     };
-
     for (const b of bets) {
       const t = b.betType;
       if (!(t in out)) continue;
 
       if (t === "WIN" || t === "PLACE" || t === "SHOW") {
-        const horse = b.picks?.[0];
+        const horse = (b.picks || [])[0];
         if (!horse) continue;
         out[t].set(horse, (out[t].get(horse) ?? 0) + Number(b.amount || 0));
       } else {
@@ -520,41 +428,40 @@ export default function BettingTerminal() {
       const total = poolsTotals[t] ?? 0;
       const map = amountsOn[t];
       return Array.from(map.entries())
-        .map(([combo, on]) => ({ combo, on, payoutPerDollar: on > 0 ? total / on : 0, odds: on > 0 ? total / on - 1 : 0 }))
+        .map(([combo, on]) => ({
+          combo,
+          on,
+          payoutPerDollar: on > 0 ? total / on : 0,
+          odds: on > 0 ? total / on - 1 : 0,
+        }))
         .sort((a, b) => b.on - a.on)
         .slice(0, limit);
     };
     return { EXACTA: build("EXACTA"), TRIFECTA: build("TRIFECTA"), SUPERFECTA: build("SUPERFECTA") };
   }, [poolsTotals, amountsOn]);
 
-  // -----------------
-  // Payouts + ledger (after results)
-  // -----------------
-  const outcomeResultMap = useMemo(() => ({
-    WIN: [results.first],
-    PLACE: [results.first, results.second],
-    SHOW: [results.first, results.second, results.third],
-    EXACTA: [results.first, results.second],
-    TRIFECTA: [results.first, results.second, results.third],
-    SUPERFECTA: [results.first, results.second, results.third, results.fourth],
-  }), [results]);
-
+  // ---------- Payout ledger ----------
   const perBetTypePayouts = useMemo(() => {
-    // Returns:
-    // { [type]: { poolTotal, winners: [{betId,bettor,amountWon}], totalPaid } }
     const out = {};
-    for (const t of ["WIN","PLACE","SHOW","EXACTA","TRIFECTA","SUPERFECTA"]) {
+    const finish = {
+      WIN: [results.first],
+      PLACE: [results.first, results.second],
+      SHOW: [results.first, results.second, results.third],
+      EXACTA: [results.first, results.second],
+      TRIFECTA: [results.first, results.second, results.third],
+      SUPERFECTA: [results.first, results.second, results.third, results.fourth],
+    };
+
+    for (const t of PUBLIC_BOARDS) {
       const pool = bets.filter((b) => b.betType === t);
       const poolTotal = pool.reduce((s, b) => s + Number(b.amount || 0), 0);
 
       let winners = [];
-      const res = outcomeResultMap[t] || [];
+      const res = finish[t] || [];
 
       if (t === "WIN" || t === "PLACE" || t === "SHOW") {
-        // A ticket wins if its picked horse is in the allowed finish set.
         winners = pool.filter((b) => res.includes((b.picks || [])[0]));
       } else {
-        // Exact match ordered
         winners = pool.filter((b) => {
           const p = b.picks || [];
           if (p.length !== res.length) return false;
@@ -565,18 +472,18 @@ export default function BettingTerminal() {
 
       if (winners.length === 0 || poolTotal === 0) {
         out[t] = { poolTotal, winners: [], totalPaid: 0 };
-        continue;
+      } else {
+        const split = poolTotal / winners.length;
+        out[t] = {
+          poolTotal,
+          winners: winners.map((w) => ({ bettor: w.bettor, amountWon: split })),
+          totalPaid: poolTotal,
+        };
       }
-
-      const split = poolTotal / winners.length;
-      out[t] = {
-        poolTotal,
-        winners: winners.map((w) => ({ betId: w.id, bettor: w.bettor, amountWon: split })),
-        totalPaid: poolTotal,
-      };
     }
+
     return out;
-  }, [bets, outcomeResultMap]);
+  }, [bets, results]);
 
   const payoutLedger = useMemo(() => {
     const people = participants.length ? participants : Array.from(new Set(bets.map((b) => b.bettor))).filter(Boolean);
@@ -612,23 +519,16 @@ export default function BettingTerminal() {
 
     const totalSpent = rows.reduce((s, r) => s + r.spent, 0);
     const totalWon = rows.reduce((s, r) => s + r.won, 0);
-
-    const carryover = Math.max(0, totalSpent - totalWon); // pools with no winners
+    const carryover = Math.max(0, totalSpent - totalWon);
 
     return { rows, totalSpent, totalWon, carryover };
   }, [participants, bets, perBetTypePayouts]);
 
-  const resultsCompleteForWPS = useMemo(() => {
-    // Need at least 1st for WIN; 1st+2nd for PLACE; 1st+2nd+3rd for SHOW.
-    return !!results.first && !!results.second && !!results.third;
-  }, [results]);
-
-  // -----------------
-  // Actions
-  // -----------------
-  const saveParticipants = async (next) => {
-    setParticipants(next);
-    if (syncMode === "CLOUD") await pushRoomUpdate({ participants: next });
+  // ---------- Actions ----------
+  const focusNameInput = () => {
+    setTimeout(() => {
+      try { nameInputRef.current?.focus(); } catch { /* ignore */ }
+    }, 0);
   };
 
   const addParticipant = async () => {
@@ -637,38 +537,30 @@ export default function BettingTerminal() {
     if (participants.includes(trimmed)) return;
 
     const next = [...participants, trimmed];
+    setParticipants(next);
     setNameInput("");
-
-    setTimeout(() => {
-      try { addNameRef.current?.focus(); } catch { /* ignore */ }
-    }, 0);
+    focusNameInput();
 
     if (!bettor) setBettor(trimmed);
-    await saveParticipants(next);
+    if (syncMode === "CLOUD") await pushRoomUpdate({ participants: next });
   };
 
   const deleteParticipant = async (name) => {
     const next = participants.filter((p) => p !== name);
-    await saveParticipants(next);
+    setParticipants(next);
     if (bettor === name) setBettor("");
+    if (syncMode === "CLOUD") await pushRoomUpdate({ participants: next });
   };
 
   const addBetCloudOrLocal = async (ticket) => {
-    // LOCAL
     if (!(syncMode === "CLOUD" && cloudReady && roomCode)) {
       const now = new Date().toISOString();
       setBets((prev) => [
         ...prev,
-        {
-          id: crypto?.randomUUID ? crypto.randomUUID() : String(Date.now()) + Math.random().toString(16).slice(2),
-          createdAt: now,
-          ...ticket,
-        },
+        { id: crypto?.randomUUID ? crypto.randomUUID() : String(Date.now()) + Math.random().toString(16).slice(2), createdAt: now, ...ticket },
       ]);
       return;
     }
-
-    // CLOUD
     const betsRef = collectionFn(firestore, "rooms", roomCode, "bets");
     await addDocFn(betsRef, { ...ticket, createdAt: serverTimestampFn() });
   };
@@ -676,94 +568,25 @@ export default function BettingTerminal() {
   const addBet = async () => {
     if (!canAddBet) return;
 
-    // Boxed exotics expands to many tickets
     if (boxed && isExotic) {
       for (const picks of boxCombos) {
         // eslint-disable-next-line no-await-in-loop
-        await addBetCloudOrLocal({
-          bettor,
-          amount: Number(amount),
-          betType,
-          picks,
-        });
+        await addBetCloudOrLocal({ bettor, amount: Number(denom), betType, picks });
       }
       return;
     }
 
-    await addBetCloudOrLocal({
-      bettor,
-      amount: Number(amount),
-      betType,
-      picks: currentPicks,
-    });
+    await addBetCloudOrLocal({ bettor, amount: Number(denom), betType, picks: currentPicks });
   };
 
   const cancelBet = async (betId) => {
     if (!betId) return;
 
-    // LOCAL
     if (!(syncMode === "CLOUD" && cloudReady && roomCode)) {
       setBets((prev) => prev.filter((b) => b.id !== betId));
       return;
     }
-
-    // CLOUD
-    const betRef = docFn(firestore, "rooms", roomCode, "bets", betId);
-    await deleteDocFn(betRef);
-  };
-
-  const cancelAllBets = async () => {
-    // LOCAL
-    if (!(syncMode === "CLOUD" && cloudReady && roomCode)) {
-      setBets([]);
-      return;
-    }
-    // CLOUD: delete visible bet docs
-    for (const b of bets) {
-      if (!b?.id) continue;
-      // eslint-disable-next-line no-await-in-loop
-      await deleteDocFn(docFn(firestore, "rooms", roomCode, "bets", b.id));
-    }
-  };
-
-  const nextRace = async () => {
-    // Clear bets and results, keep participants
-    setResults({ first: "", second: "", third: "", fourth: "" });
-    setRaceLocked(false);
-    setBetType("WIN");
-    setPick1(""); setPick2(""); setPick3(""); setPick4("");
-    setBoxed(false); setBoxHorses([]);
-
-    await cancelAllBets();
-
-    if (syncMode === "CLOUD") {
-      await pushRoomUpdate({
-        raceLocked: false,
-        results: { first: "", second: "", third: "", fourth: "" },
-      });
-    }
-  };
-
-  const newRace = async () => {
-    // Clear participants + bets + results
-    setResults({ first: "", second: "", third: "", fourth: "" });
-    setRaceLocked(false);
-    setBetType("WIN");
-    setPick1(""); setPick2(""); setPick3(""); setPick4("");
-    setBoxed(false); setBoxHorses([]);
-    setBettor("");
-    setNameInput("");
-
-    await cancelAllBets();
-    await saveParticipants([]);
-
-    if (syncMode === "CLOUD") {
-      await pushRoomUpdate({
-        participants: [],
-        raceLocked: false,
-        results: { first: "", second: "", third: "", fourth: "" },
-      });
-    }
+    await deleteDocFn(docFn(firestore, "rooms", roomCode, "bets", betId));
   };
 
   const lockBets = async () => {
@@ -776,25 +599,70 @@ export default function BettingTerminal() {
     if (syncMode === "CLOUD") await pushRoomUpdate({ raceLocked: false });
   };
 
+  const nextRace = async () => {
+    // clear bets + results, keep participants
+    setResults({ first: "", second: "", third: "", fourth: "" });
+    setRaceLocked(false);
+    setBetType("WIN");
+    setPick1(""); setPick2(""); setPick3(""); setPick4("");
+    setBoxed(false); setBoxHorses([]);
+
+    if (!(syncMode === "CLOUD" && cloudReady && roomCode)) {
+      setBets([]);
+      return;
+    }
+
+    // easiest: new room with same participants (prevents “stale bets”)
+    const rc = randomRoomCode();
+    setRoomCode(rc);
+    setRoomInput(rc);
+    setBets([]);
+
+    const roomRef = docFn(firestore, "rooms", rc);
+    await setDocFn(roomRef, {
+      participants: [...participants],
+      raceLocked: false,
+      results: { first: "", second: "", third: "", fourth: "" },
+      terminalGraphic: terminalGraphic ?? null,
+      tvThemeKey,
+      enforceMaxBet,
+      maxBet: Number(maxBet),
+      updatedAt: serverTimestampFn(),
+    }, { merge: true });
+  };
+
+  const newRace = async () => {
+    // clear participants + bets + results
+    setParticipants([]);
+    setBettor("");
+    setNameInput("");
+    setResults({ first: "", second: "", third: "", fourth: "" });
+    setRaceLocked(false);
+    setBets([]);
+
+    if (!(syncMode === "CLOUD" && cloudReady && roomCode)) return;
+
+    const rc = randomRoomCode();
+    setRoomCode(rc);
+    setRoomInput(rc);
+
+    const roomRef = docFn(firestore, "rooms", rc);
+    await setDocFn(roomRef, {
+      participants: [],
+      raceLocked: false,
+      results: { first: "", second: "", third: "", fourth: "" },
+      terminalGraphic: terminalGraphic ?? null,
+      tvThemeKey,
+      enforceMaxBet,
+      maxBet: Number(maxBet),
+      updatedAt: serverTimestampFn(),
+    }, { merge: true });
+  };
+
   const updateResultsField = async (patch) => {
     const next = { ...results, ...patch };
     setResults(next);
     if (syncMode === "CLOUD") await pushRoomUpdate({ results: next });
-  };
-
-  const updateMaxBet = async (patch) => {
-    const nextEnforce = patch.enforceMaxBet !== undefined ? patch.enforceMaxBet : enforceMaxBet;
-    const nextMax = patch.maxBet !== undefined ? patch.maxBet : maxBet;
-
-    setEnforceMaxBet(nextEnforce);
-    setMaxBet(nextMax);
-
-    if (syncMode === "CLOUD") await pushRoomUpdate({ enforceMaxBet: nextEnforce, maxBet: nextMax });
-  };
-
-  const setTvTheme = async (key) => {
-    setTvThemeKey(key);
-    if (syncMode === "CLOUD") await pushRoomUpdate({ tvThemeKey: key });
   };
 
   const onUploadGraphic = async (file) => {
@@ -805,16 +673,9 @@ export default function BettingTerminal() {
     reader.onload = async () => {
       const dataUrl = String(reader.result || "");
       setTerminalGraphic(dataUrl);
-
-      // Persist to cloud and local
       if (syncMode === "CLOUD") await pushRoomUpdate({ terminalGraphic: dataUrl });
     };
     reader.readAsDataURL(file);
-  };
-
-  const clearGraphic = async () => {
-    setTerminalGraphic(null);
-    if (syncMode === "CLOUD") await pushRoomUpdate({ terminalGraphic: null });
   };
 
   const exportCsv = () => {
@@ -840,34 +701,26 @@ export default function BettingTerminal() {
     URL.revokeObjectURL(url);
   };
 
-  // TV auto rotate boards every 5 seconds
+  // TV auto rotate every 5 seconds
   useEffect(() => {
     if (mode !== "TV") return;
     if (!autoRotate) return;
-    const keys = PUBLIC_BOARDS.map((b) => b.key);
-    const i = keys.indexOf(boardKey);
-    const next = keys[(i + 1 + keys.length) % keys.length];
+    const i = PUBLIC_BOARDS.indexOf(boardKey);
+    const next = PUBLIC_BOARDS[(i + 1 + PUBLIC_BOARDS.length) % PUBLIC_BOARDS.length];
     const handle = setTimeout(() => setBoardKey(next), 5000);
     return () => clearTimeout(handle);
   }, [mode, autoRotate, boardKey]);
 
-  // -----------------
-  // UI helpers
-  // -----------------
+  // ---------- Formatting ----------
   const smallSelect = "border rounded-2xl p-3 text-base w-full";
   const smallInput = "border rounded-2xl p-3 text-base w-full";
+  const button = "rounded-2xl px-4 py-3 text-base font-semibold border";
   const buttonPrimary = "rounded-2xl px-4 py-3 text-base font-semibold bg-black text-white disabled:opacity-40 disabled:cursor-not-allowed";
   const buttonSecondary = "rounded-2xl px-4 py-3 text-base font-semibold border disabled:opacity-40 disabled:cursor-not-allowed";
+  const chip = "px-3 py-1 rounded-full border text-sm inline-flex items-center gap-2";
 
-  const formatOdds = (odds) => {
-    if (!odds || odds <= 0) return "-";
-    return `${odds.toFixed(2)}-1`;
-  };
-
-  const formatPayoutPerTenCents = (payoutPerDollar) => {
-    if (!payoutPerDollar || payoutPerDollar <= 0) return "-";
-    return `$${(payoutPerDollar * 0.1).toFixed(2)} per $0.10`;
-  };
+  const formatOdds = (odds) => (!odds || odds <= 0 ? "-" : `${odds.toFixed(2)}-1`);
+  const formatPayoutPerTenCents = (payoutPerDollar) => (!payoutPerDollar || payoutPerDollar <= 0 ? "-" : `$${(payoutPerDollar * 0.1).toFixed(2)} per $0.10`);
 
   const PickSelect = ({ label, value, onChange, disabled }) => (
     <div className="space-y-1">
@@ -897,399 +750,24 @@ export default function BettingTerminal() {
     </div>
   );
 
-  const ModeSwitcher = () => {
-    const btn = (m) => (
-      <button className={"rounded-2xl px-4 py-2 text-sm font-semibold border " + (mode === m ? "bg-black text-white" : "")} onClick={() => setMode(m)}>
-        {m}
-      </button>
-    );
-    return (
-      <div className="flex flex-wrap gap-2 items-center">
-        {btn("TERMINAL")}
-        {btn("BETTOR")}
-        {btn("TV")}
-      </div>
-    );
-  };
-
-  const Header = () => (
-    <div className="flex items-start justify-between gap-3">
-      <div>
-        <div className="text-2xl font-black">Betting Terminal</div>
-        <div className="text-xs text-gray-500 mt-1">
-          Mode: <span className="font-semibold">{mode}</span> | Sync: <span className="font-semibold">{syncMode}</span>
-          {roomCode ? <> | Room: <span className="font-semibold">{roomCode}</span></> : null}
-        </div>
-      </div>
-      {mode === "TERMINAL" ? (
-        <div className="flex flex-col sm:flex-row gap-2 items-end">
-          <button onClick={newRace} className={buttonSecondary}>New Race</button>
-          <button onClick={nextRace} className={buttonSecondary}>Next Race</button>
-          <button onClick={exportCsv} className={buttonSecondary} disabled={bets.length === 0}>Export CSV</button>
-        </div>
-      ) : null}
-    </div>
-  );
-
-  const RoomPanel = () => {
-    if (mode !== "TERMINAL") return null;
-    return (
-      <div className="rounded-2xl border p-4 space-y-3">
-        <div className="font-semibold">Multi-phone setup</div>
-
-        {!cloudReady ? (
-          <div className="text-sm text-gray-700">
-            Cloud not ready - confirm package.json includes firebase and redeploy.
-          </div>
-        ) : null}
-
-        <div className="flex flex-col sm:flex-row gap-2">
-          <button className={buttonSecondary} onClick={() => {
-            const rc = randomRoomCode();
-            setRoomCode(rc);
-            setRoomInput(rc);
-            if (cloudReady) setSyncMode("CLOUD");
-          }}>
-            Generate room
-          </button>
-
-          <input className={smallInput} value={roomInput} onChange={(e) => setRoomInput(e.target.value.toUpperCase())} placeholder="Enter room code" />
-
-          <button className={buttonPrimary} onClick={() => {
-            const rc = (roomInput || "").toUpperCase().replace(/[^A-Z0-9]/g, "").slice(0, 10);
-            setRoomCode(rc);
-            if (cloudReady) setSyncMode("CLOUD");
-          }} disabled={!roomInput || !cloudReady}>
-            Use room
-          </button>
-
-          <button className={buttonSecondary} onClick={() => { setSyncMode("LOCAL"); setRoomCode(""); setRoomInput(""); }}>
-            Local only
-          </button>
-        </div>
-
-        <div className="rounded-2xl border p-3 space-y-2">
-          <div className="text-sm font-semibold">TV theme</div>
-          <select className={smallSelect} value={tvThemeKey} onChange={(e) => setTvTheme(e.target.value)}>
-            {TV_THEMES.map((t) => <option key={t.key} value={t.key}>{t.name}</option>)}
-          </select>
-        </div>
-
-        <div className="rounded-2xl border p-3 space-y-2">
-          <div className="font-semibold text-sm">Terminal / TV photo</div>
-          <input type="file" accept="image/*" onChange={(e) => onUploadGraphic(e.target.files?.[0])} className="text-sm" />
-          {terminalGraphic ? (
-            <div className="space-y-2">
-              <img src={terminalGraphic} alt="Terminal graphic" className="max-h-40 rounded-2xl border object-contain w-full" />
-              <button onClick={clearGraphic} className={buttonSecondary}>Remove photo</button>
-            </div>
-          ) : (
-            <div className="text-xs text-gray-600">No photo uploaded.</div>
-          )}
-        </div>
-
-        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 items-start">
-          <div className="space-y-2">
-            <div className="text-sm font-semibold">Bettor QR</div>
-            <div className="text-xs text-gray-600 break-all">{bettorUrl || "(loading...)"}</div>
-            {qrDataUrl ? <img src={qrDataUrl} alt="Bettor QR" className="border rounded-2xl w-[240px] h-[240px]" /> : <div className="text-xs text-red-600">QR not ready</div>}
-          </div>
-          <div className="space-y-2">
-            <div className="text-sm font-semibold">TV link</div>
-            <div className="text-xs text-gray-600 break-all">{tvUrl || "(loading...)"}</div>
-          </div>
-        </div>
-      </div>
-    );
-  };
-
-  const ParticipantsPanel = () => {
-    if (mode !== "TERMINAL") return null;
-    return (
-      <div className="rounded-2xl border p-4 space-y-3">
-        <div className="flex items-center justify-between">
-          <div className="font-semibold">Participants</div>
-          <div className="text-xs text-gray-600">These populate the Bettor dropdown</div>
-        </div>
-
-        <div className="flex flex-col sm:flex-row gap-2">
-          <input ref={addNameRef} value={nameInput} onChange={(e) => setNameInput(e.target.value)} placeholder="Add name" className={smallInput} onKeyDown={(e) => { if (e.key === "Enter") addParticipant(); }} />
-          <button onClick={addParticipant} className={buttonPrimary}>Add</button>
-        </div>
-
-        <div className="flex flex-wrap gap-2">
-          {participants.length === 0 ? (
-            <div className="text-sm text-gray-600">Add at least 2 participants.</div>
-          ) : participants.map((p) => (
-            <span key={p} className="px-3 py-1 rounded-full border text-sm inline-flex items-center gap-2">
-              {p}
-              <button className="border rounded-full w-6 h-6 flex items-center justify-center" onClick={() => deleteParticipant(p)} title="Remove">×</button>
-            </span>
-          ))}
-        </div>
-      </div>
-    );
-  };
-
-  const BettingPanel = () => {
-    if (mode !== "TERMINAL" && mode !== "BETTOR") return null;
-
-    return (
-      <div className="rounded-2xl border p-4 space-y-4">
-        <div className="flex items-center justify-between">
-          <div className="font-semibold">Place a bet</div>
-          <div className="text-xs text-gray-600">{raceLocked ? "Locked" : "Open"}</div>
-        </div>
-
-        <div className="rounded-2xl border p-3 text-sm text-gray-700">
-          <div className="font-semibold">Totals</div>
-          <div className="mt-1">All bets total: ${totalAllBets.toFixed(2)}</div>
-          <div className="mt-1">Room: {roomCode || "(local)"} | Sync: {syncMode}</div>
-        </div>
-
-        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-          <div className="space-y-1">
-            <div className="text-sm font-medium">Your name</div>
-            <select className={smallSelect} value={bettor} onChange={(e) => setBettor(e.target.value)} disabled={raceLocked}>
-              <option value="">Select</option>
-              {participants.map((p) => <option key={p} value={p}>{p}</option>)}
-            </select>
-            {participants.length === 0 ? <div className="text-xs text-red-600">Host must add participants first.</div> : null}
-          </div>
-
-          <div className="space-y-1">
-            <div className="text-sm font-medium">Bet type</div>
-            <select className={smallSelect} value={betType} onChange={(e) => {
-              const t = e.target.value;
-              setBetType(t);
-              setPick1(""); setPick2(""); setPick3(""); setPick4("");
-              setBoxed(false); setBoxHorses([]);
-            }} disabled={raceLocked}>
-              {BET_TYPES.map((t) => <option key={t.key} value={t.key}>{t.label}</option>)}
-            </select>
-          </div>
-        </div>
-
-        <DenomPicker />
-
-        {mode === "TERMINAL" ? (
-          <div className="flex flex-col sm:flex-row gap-3 sm:items-center sm:justify-between">
-            <div className="font-semibold">Limits</div>
-            <div className="flex flex-col sm:flex-row gap-2 sm:items-center">
-              <label className="flex items-center gap-2 text-sm">
-                <input type="checkbox" checked={enforceMaxBet} onChange={(e) => setEnforceMaxBet(e.target.checked)} />
-                Enforce max bet
-              </label>
-              <div className="flex items-center gap-2">
-                <span className="text-sm text-gray-700">Max</span>
-                <input type="number" className="border rounded-2xl p-2 w-28" value={maxBet} onChange={(e) => updateMaxBet({ maxBet: Number(e.target.value) })} min={0.1} step={0.1} />
-              </div>
-            </div>
-          </div>
-        ) : null}
-
-        <div className="space-y-2">
-          <div className="text-sm font-medium">Pick(s)</div>
-
-          {isExotic ? (
-            <label className="flex items-center gap-2 text-sm">
-              <input type="checkbox" checked={boxed} onChange={(e) => { setBoxed(e.target.checked); setBoxHorses([]); }} disabled={raceLocked} />
-              Box (any order)
-            </label>
-          ) : null}
-
-          {boxed && isExotic ? (
-            <div className="space-y-2">
-              <div className="text-xs text-gray-600">Select {picksNeeded} or more horses. Tickets: {boxCombos.length}. Max 120.</div>
-              <div className="grid grid-cols-2 gap-2">
-                {participants.map((p) => {
-                  const checked = boxHorses.includes(p);
-                  return (
-                    <label key={p} className="flex items-center gap-2 text-sm border rounded-2xl p-2">
-                      <input type="checkbox" checked={checked} onChange={(e) => {
-                        if (e.target.checked) setBoxHorses((h) => [...h, p]);
-                        else setBoxHorses((h) => h.filter((x) => x !== p));
-                      }} disabled={raceLocked} />
-                      {p}
-                    </label>
-                  );
-                })}
-              </div>
-            </div>
-          ) : (
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-              <PickSelect label={picksNeeded === 1 ? "Pick" : "1st"} value={pick1} onChange={setPick1} disabled={raceLocked} />
-              {picksNeeded >= 2 ? <PickSelect label="2nd" value={pick2} onChange={setPick2} disabled={raceLocked} /> : null}
-              {picksNeeded >= 3 ? <PickSelect label="3rd" value={pick3} onChange={setPick3} disabled={raceLocked} /> : null}
-              {picksNeeded >= 4 ? <PickSelect label="4th"} value={pick4} onChange={setPick4} disabled={raceLocked} /> : null}
-            </div>
-          )}
-        </div>
-
-        <button onClick={addBet} className={buttonPrimary} disabled={!canAddBet}>
-          Submit bet
-        </button>
-
-        {mode === "BETTOR" ? (
-          <div className="rounded-2xl border p-4 space-y-2">
-            <div className="font-semibold">Your bets</div>
-            <div className="text-sm text-gray-600">Your total: ${myBets.reduce((s,b)=>s+Number(b.amount||0),0).toFixed(2)}</div>
-            {myBets.length === 0 ? <div className="text-sm text-gray-600">No bets yet.</div> : (
-              <div className="space-y-2">
-                {myBets.slice().reverse().map((b) => (
-                  <div key={b.id} className="rounded-2xl border p-3">
-                    <div className="flex items-start justify-between gap-3">
-                      <div className="font-medium">{b.betType} - {(b.picks||[]).join(" > ")}</div>
-                      <div className="text-sm text-gray-600">${Number(b.amount).toFixed(2)}</div>
-                    </div>
-                    <div className="flex items-center justify-between mt-2">
-                      <div className="text-xs text-gray-500">{b.createdAt ? new Date(b.createdAt).toLocaleString() : ""}</div>
-                      <button className={buttonSecondary} onClick={() => cancelBet(b.id)} disabled={raceLocked}>Delete</button>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            )}
-          </div>
-        ) : null}
-      </div>
-    );
-  };
-
-  const TerminalBetList = () => {
-    if (mode !== "TERMINAL") return null;
-    return (
-      <div className="rounded-2xl border p-4 space-y-3">
-        <div className="flex items-center justify-between">
-          <div className="font-semibold">All bets</div>
-          <div className="text-sm text-gray-600">Total: ${totalAllBets.toFixed(2)}</div>
-        </div>
-
-        {bets.length === 0 ? <div className="text-sm text-gray-600">No bets yet.</div> : (
-          <div className="space-y-2">
-            {bets.slice().reverse().map((b) => (
-              <div key={b.id} className="rounded-2xl border p-3">
-                <div className="flex items-start justify-between gap-3">
-                  <div className="font-medium">{b.bettor} - {b.betType} - {(b.picks||[]).join(" > ")}</div>
-                  <div className="text-sm text-gray-600">${Number(b.amount).toFixed(2)}</div>
-                </div>
-                <div className="flex items-center justify-between mt-2">
-                  <div className="text-xs text-gray-500">{b.createdAt ? new Date(b.createdAt).toLocaleString() : ""}</div>
-                  <button className={buttonSecondary} onClick={() => cancelBet(b.id)}>Cancel</button>
-                </div>
-              </div>
-            ))}
-          </div>
-        )}
-      </div>
-    );
-  };
-
-  const LockControls = () => {
-    if (mode !== "TERMINAL") return null;
-    return (
-      <div className="rounded-2xl border p-4 space-y-3">
-        <div className="flex items-center justify-between">
-          <div className="font-semibold">Betting lock</div>
-          <div className="text-sm text-gray-600">{raceLocked ? "Locked" : "Open"}</div>
-        </div>
-        <div className="flex flex-col sm:flex-row gap-2">
-          <button className={buttonSecondary} onClick={lockBets} disabled={raceLocked}>Lock Bets</button>
-          <button className={buttonSecondary} onClick={unlockBets} disabled={!raceLocked}>Unlock Bets</button>
-        </div>
-      </div>
-    );
-  };
-
-  const ResultsPanel = () => {
-    if (mode !== "TERMINAL") return null;
-    return (
-      <div className="rounded-2xl border p-4 space-y-4">
-        <div className="flex items-center justify-between">
-          <div className="font-semibold">Official results</div>
-          <div className="text-xs text-gray-600">Entering results enables payout ledger</div>
-        </div>
-
-        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-          <PickSelect label="1st" value={results.first} onChange={(v) => updateResultsField({ first: v })} disabled={false} />
-          <PickSelect label="2nd" value={results.second} onChange={(v) => updateResultsField({ second: v })} disabled={false} />
-          <PickSelect label="3rd" value={results.third} onChange={(v) => updateResultsField({ third: v })} disabled={false} />
-          <PickSelect label="4th (Superfecta)" value={results.fourth} onChange={(v) => updateResultsField({ fourth: v })} disabled={false} />
-        </div>
-
-        <div className="rounded-2xl border p-3 space-y-2">
-          <div className="font-semibold">Payout ledger</div>
-          <div className="text-xs text-gray-600">
-            Total spent must equal total won + carryover (pools with no winners).
-          </div>
-
-          <div className="overflow-x-auto">
-            <table className="w-full text-sm">
-              <thead>
-                <tr className="text-left border-b">
-                  <th className="py-2 pr-2">Person</th>
-                  <th className="py-2 pr-2">Spent</th>
-                  <th className="py-2 pr-2">Won</th>
-                  <th className="py-2">Net</th>
-                </tr>
-              </thead>
-              <tbody>
-                {payoutLedger.rows.map((r) => (
-                  <tr key={r.person} className="border-b last:border-b-0">
-                    <td className="py-2 pr-2 font-medium">{r.person}</td>
-                    <td className="py-2 pr-2">${r.spent.toFixed(2)}</td>
-                    <td className="py-2 pr-2">${r.won.toFixed(2)}</td>
-                    <td className="py-2">${r.net.toFixed(2)}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-
-          <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 text-sm">
-            <div className="rounded-2xl border p-2">
-              <div className="text-xs text-gray-600">Total spent</div>
-              <div className="font-semibold">${payoutLedger.totalSpent.toFixed(2)}</div>
-            </div>
-            <div className="rounded-2xl border p-2">
-              <div className="text-xs text-gray-600">Total won</div>
-              <div className="font-semibold">${payoutLedger.totalWon.toFixed(2)}</div>
-            </div>
-            <div className="rounded-2xl border p-2">
-              <div className="text-xs text-gray-600">Carryover</div>
-              <div className="font-semibold">${payoutLedger.carryover.toFixed(2)}</div>
-            </div>
-          </div>
-
-          <div className="text-xs text-gray-600">
-            Check: ${payoutLedger.totalWon.toFixed(2)} + ${payoutLedger.carryover.toFixed(2)} = ${payoutLedger.totalSpent.toFixed(2)}
-          </div>
-        </div>
-      </div>
-    );
-  };
-
+  // ---------- TV view ----------
   const TvBoard = () => {
-    const header = PUBLIC_BOARDS.find((b) => b.key === boardKey)?.label ?? "Board";
     const t = themeByKey(tvThemeKey);
+    const headerLabel =
+      boardKey === "WIN" ? "Win Board" :
+      boardKey === "PLACE" ? "Place Board" :
+      boardKey === "SHOW" ? "Show Board" :
+      boardKey === "EXACTA" ? "Exacta Board" :
+      boardKey === "TRIFECTA" ? "Trifecta Board" : "Superfecta Board";
 
     const rows =
       boardKey === "WIN" || boardKey === "PLACE" || boardKey === "SHOW"
         ? horseBoard[boardKey]
-          .slice()
-          .sort((a, b) => b.on - a.on)
-          .map((r) => ({
-            left: r.horse,
-            on: `$${r.on.toFixed(2)}`,
-            odds: formatOdds(r.odds),
-            payout: formatPayoutPerTenCents(r.payoutPerDollar),
-          }))
-        : (boardKey === "EXACTA" ? exoticLeaders.EXACTA : boardKey === "TRIFECTA" ? exoticLeaders.TRIFECTA : exoticLeaders.SUPERFECTA).map((r) => ({
-          left: r.combo,
-          on: `$${r.on.toFixed(2)}`,
-          odds: formatOdds(r.odds),
-          payout: formatPayoutPerTenCents(r.payoutPerDollar),
-        }));
+            .slice()
+            .sort((a, b) => b.on - a.on)
+            .map((r) => ({ left: r.horse, on: `$${r.on.toFixed(2)}`, odds: formatOdds(r.odds), payout: formatPayoutPerTenCents(r.payoutPerDollar) }))
+        : (boardKey === "EXACTA" ? exoticLeaders.EXACTA : boardKey === "TRIFECTA" ? exoticLeaders.TRIFECTA : exoticLeaders.SUPERFECTA)
+            .map((r) => ({ left: r.combo, on: `$${r.on.toFixed(2)}`, odds: formatOdds(r.odds), payout: formatPayoutPerTenCents(r.payoutPerDollar) }));
 
     return (
       <div className="min-h-screen" style={{ background: t.bg, color: t.text }}>
@@ -1298,7 +776,7 @@ export default function BettingTerminal() {
             <div className="lg:col-span-2 space-y-2">
               <div className="text-3xl font-black">Betting Terminal</div>
               <div className="text-lg" style={{ color: t.muted }}>
-                {header} - live pools, odds, payouts (auto every 5s)
+                {headerLabel} - odds + payouts (auto 5s)
               </div>
               {roomCode ? <div className="text-sm" style={{ color: t.muted }}>Room {roomCode}</div> : null}
               {terminalGraphic ? (
@@ -1307,8 +785,7 @@ export default function BettingTerminal() {
             </div>
 
             <div className="rounded-2xl p-4" style={{ border: `1px solid ${t.border}` }}>
-              <div className="font-semibold text-lg">Bettor QR</div>
-              <div className="text-xs" style={{ color: t.muted }}>Scan to bet</div>
+              <div className="font-semibold text-lg">Scan to bet</div>
               {qrDataUrl ? (
                 <img src={qrDataUrl} alt="Bettor QR" className="mt-2 rounded-2xl border w-[240px] h-[240px]" style={{ borderColor: t.border }} />
               ) : (
@@ -1318,7 +795,11 @@ export default function BettingTerminal() {
           </div>
 
           <div className="rounded-2xl p-4" style={{ border: `1px solid ${t.border}` }}>
-            <div className="font-semibold text-lg">{header}</div>
+            <div className="flex items-center justify-between">
+              <div className="font-semibold text-lg">{headerLabel}</div>
+              <div className="text-sm" style={{ color: t.muted }}>Total bets: ${totalAllBets.toFixed(2)}</div>
+            </div>
+
             <div className="mt-3 overflow-x-auto">
               <table className="w-full text-base">
                 <thead>
@@ -1343,7 +824,7 @@ export default function BettingTerminal() {
             </div>
 
             <div className="mt-3 text-sm" style={{ color: t.muted }}>
-              Pools: WIN ${poolsTotals.WIN?.toFixed(2) ?? "0.00"} | PLACE ${poolsTotals.PLACE?.toFixed(2) ?? "0.00"} | SHOW ${poolsTotals.SHOW?.toFixed(2) ?? "0.00"} | Total ${totalAllBets.toFixed(2)}
+              Pools: WIN ${poolsTotals.WIN.toFixed(2)} | PLACE ${poolsTotals.PLACE.toFixed(2)} | SHOW ${poolsTotals.SHOW.toFixed(2)}
             </div>
           </div>
         </div>
@@ -1351,30 +832,314 @@ export default function BettingTerminal() {
     );
   };
 
-  // -----------------
-  // Render
-  // -----------------
+  // ---------- Main render ----------
   if (mode === "TV") return <TvBoard />;
+
+  const myBets = bettor ? bets.filter((b) => b.bettor === bettor) : [];
+  const myTotal = myBets.reduce((s, b) => s + Number(b.amount || 0), 0);
 
   return (
     <div className="min-h-screen bg-white">
       <div className="max-w-3xl mx-auto p-4 sm:p-6 space-y-6">
-        {terminalGraphic ? <img src={terminalGraphic} alt="Terminal photo" className="max-h-40 rounded-2xl border object-contain w-full" /> : null}
+        {terminalGraphic ? <img src={terminalGraphic} alt="Photo" className="max-h-40 rounded-2xl border object-contain w-full" /> : null}
 
-        <Header />
-        <ModeSwitcher />
-        <RoomPanel />
-
-        <div className="grid gap-6">
-          {mode === "TERMINAL" ? <ParticipantsPanel /> : null}
-          <BettingPanel />
-          {mode === "TERMINAL" ? <LockControls /> : null}
-          {mode === "TERMINAL" ? <TerminalBetList /> : null}
-          {mode === "TERMINAL" ? <ResultsPanel /> : null}
-
-          <div className="text-xs text-gray-500 pb-10">
-            If Bettor cannot see participants: make sure you are in a room and you added participants on Terminal.
+        <div className="flex items-start justify-between gap-3">
+          <div>
+            <div className="text-2xl font-black">Betting Terminal</div>
+            <div className="text-xs text-gray-500 mt-1">
+              Mode: <span className="font-semibold">{mode}</span> | Sync: <span className="font-semibold">{syncMode}</span>
+              {roomCode ? <> | Room: <span className="font-semibold">{roomCode}</span></> : null}
+            </div>
           </div>
+
+          {mode === "TERMINAL" ? (
+            <div className="flex flex-col sm:flex-row gap-2 items-end">
+              <button className={button} onClick={newRace}>New Race</button>
+              <button className={button} onClick={nextRace}>Next Race</button>
+              <button className={button} onClick={exportCsv} disabled={bets.length === 0}>Export CSV</button>
+            </div>
+          ) : null}
+        </div>
+
+        <div className="flex flex-wrap gap-2 items-center">
+          <button className={button + (mode === "TERMINAL" ? " bg-black text-white" : "")} onClick={() => setMode("TERMINAL")}>TERMINAL</button>
+          <button className={button + (mode === "BETTOR" ? " bg-black text-white" : "")} onClick={() => setMode("BETTOR")}>BETTOR</button>
+          <button className={button + (mode === "TV" ? " bg-black text-white" : "")} onClick={() => setMode("TV")}>TV</button>
+        </div>
+
+        {mode === "TERMINAL" ? (
+          <div className="rounded-2xl border p-4 space-y-3">
+            <div className="font-semibold">Room</div>
+            <div className="flex flex-col sm:flex-row gap-2">
+              <button className={button} onClick={() => {
+                const rc = randomRoomCode();
+                setRoomCode(rc);
+                setRoomInput(rc);
+                if (cloudReady) setSyncMode("CLOUD");
+              }}>
+                Generate room
+              </button>
+              <input className={smallInput} value={roomInput} onChange={(e) => setRoomInput(e.target.value.toUpperCase())} placeholder="Enter room code" />
+              <button className={buttonPrimary} onClick={() => {
+                const rc = (roomInput || "").toUpperCase().replace(/[^A-Z0-9]/g, "").slice(0, 10);
+                setRoomCode(rc);
+                if (cloudReady) setSyncMode("CLOUD");
+              }} disabled={!roomInput || !cloudReady}>
+                Use room
+              </button>
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 items-start">
+              <div className="space-y-2">
+                <div className="font-semibold">Bettor QR</div>
+                <div className="text-xs text-gray-600 break-all">{bettorUrl || "(loading...)"}</div>
+                {qrDataUrl ? <img src={qrDataUrl} alt="QR" className="border rounded-2xl w-[240px] h-[240px]" /> : <div className="text-xs text-red-600">QR not ready</div>}
+              </div>
+
+              <div className="space-y-2">
+                <div className="font-semibold">TV link</div>
+                <div className="text-xs text-gray-600 break-all">{tvUrl || "(loading...)"}</div>
+
+                <div className="font-semibold mt-2">TV theme</div>
+                <select className={smallSelect} value={tvThemeKey} onChange={(e) => {
+                  setTvThemeKey(e.target.value);
+                  pushRoomUpdate({ tvThemeKey: e.target.value });
+                }}>
+                  {TV_THEMES.map((t) => <option key={t.key} value={t.key}>{t.name}</option>)}
+                </select>
+              </div>
+            </div>
+
+            <div className="rounded-2xl border p-3 space-y-2">
+              <div className="font-semibold">Upload photo (shows on TV)</div>
+              <input type="file" accept="image/*" onChange={(e) => onUploadGraphic(e.target.files?.[0])} className="text-sm" />
+              {terminalGraphic ? (
+                <button className={buttonSecondary} onClick={clearGraphic}>Remove photo</button>
+              ) : null}
+            </div>
+          </div>
+        ) : null}
+
+        {mode === "TERMINAL" ? (
+          <div className="rounded-2xl border p-4 space-y-3">
+            <div className="font-semibold">Participants</div>
+            <div className="flex flex-col sm:flex-row gap-2">
+              <input
+                ref={nameInputRef}
+                className={smallInput}
+                value={nameInput}
+                onChange={(e) => setNameInput(e.target.value)}
+                placeholder="Add name"
+                autoCorrect="off"
+                autoCapitalize="words"
+                autoComplete="off"
+                onKeyDown={(e) => { if (e.key === "Enter") addParticipant(); }}
+              />
+              <button className={buttonPrimary} onClick={addParticipant}>Add</button>
+            </div>
+
+            <div className="flex flex-wrap gap-2">
+              {participants.length === 0 ? <div className="text-sm text-gray-600">Add at least 2 participants.</div> : null}
+              {participants.map((p) => (
+                <span key={p} className={chip}>
+                  {p}
+                  <button className="border rounded-full w-6 h-6 flex items-center justify-center" onClick={() => deleteParticipant(p)} title="Remove">×</button>
+                </span>
+              ))}
+            </div>
+          </div>
+        ) : null}
+
+        <div className="rounded-2xl border p-4 space-y-4">
+          <div className="flex items-center justify-between">
+            <div className="font-semibold">Betting</div>
+            <div className="text-sm text-gray-600">{raceLocked ? "Locked" : "Open"}</div>
+          </div>
+
+          {mode === "TERMINAL" ? (
+            <div className="flex flex-col sm:flex-row gap-2">
+              <button className={buttonSecondary} onClick={lockBets} disabled={raceLocked}>Lock Bets</button>
+              <button className={buttonSecondary} onClick={unlockBets} disabled={!raceLocked}>Unlock Bets</button>
+            </div>
+          ) : null}
+
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <div className="space-y-1">
+              <div className="text-sm font-medium">Your name</div>
+              <select className={smallSelect} value={bettor} onChange={(e) => setBettor(e.target.value)} disabled={raceLocked}>
+                <option value="">Select</option>
+                {participants.map((p) => <option key={p} value={p}>{p}</option>)}
+              </select>
+            </div>
+
+            <div className="space-y-1">
+              <div className="text-sm font-medium">Bet type</div>
+              <select className={smallSelect} value={betType} onChange={(e) => {
+                const t = e.target.value;
+                setBetType(t);
+                setPick1(""); setPick2(""); setPick3(""); setPick4("");
+                setBoxed(false); setBoxHorses([]);
+              }} disabled={raceLocked}>
+                {BET_TYPES.map((t) => <option key={t.key} value={t.key}>{t.label}</option>)}
+              </select>
+            </div>
+          </div>
+
+          <DenomPicker />
+
+          <div className="space-y-2">
+            <div className="text-sm font-medium">Pick(s)</div>
+
+            {isExotic ? (
+              <label className="flex items-center gap-2 text-sm">
+                <input type="checkbox" checked={boxed} onChange={(e) => { setBoxed(e.target.checked); setBoxHorses([]); }} disabled={raceLocked} />
+                Box (any order)
+              </label>
+            ) : null}
+
+            {boxed && isExotic ? (
+              <div className="space-y-2">
+                <div className="text-xs text-gray-600">Select {picksNeeded} or more horses. Tickets: {boxCombos.length}. Max 120.</div>
+                <div className="grid grid-cols-2 gap-2">
+                  {participants.map((p) => (
+                    <label key={p} className="flex items-center gap-2 text-sm border rounded-2xl p-2">
+                      <input
+                        type="checkbox"
+                        checked={boxHorses.includes(p)}
+                        onChange={(e) => {
+                          if (e.target.checked) setBoxHorses((h) => [...h, p]);
+                          else setBoxHorses((h) => h.filter((x) => x !== p));
+                        }}
+                        disabled={raceLocked}
+                      />
+                      {p}
+                    </label>
+                  ))}
+                </div>
+              </div>
+            ) : (
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                <PickSelect label={picksNeeded === 1 ? "Pick" : "1st"} value={pick1} onChange={setPick1} disabled={raceLocked} />
+                {picksNeeded >= 2 ? <PickSelect label="2nd" value={pick2} onChange={setPick2} disabled={raceLocked} /> : null}
+                {picksNeeded >= 3 ? <PickSelect label="3rd" value={pick3} onChange={setPick3} disabled={raceLocked} /> : null}
+                {picksNeeded >= 4 ? <PickSelect label="4th" value={pick4} onChange={setPick4} disabled={raceLocked} /> : null}
+              </div>
+            )}
+          </div>
+
+          <button className={buttonPrimary} onClick={addBet} disabled={!canAddBet}>Submit bet</button>
+
+          {mode === "BETTOR" ? (
+            <div className="rounded-2xl border p-4 space-y-2">
+              <div className="font-semibold">Your bets</div>
+              <div className="text-sm text-gray-600">Your total: ${myTotal.toFixed(2)}</div>
+              {myBets.length === 0 ? <div className="text-sm text-gray-600">No bets yet.</div> : (
+                <div className="space-y-2">
+                  {myBets.slice().reverse().map((b) => (
+                    <div key={b.id} className="rounded-2xl border p-3">
+                      <div className="flex items-start justify-between gap-3">
+                        <div className="font-medium">{b.betType} - {(b.picks || []).join(" > ")}</div>
+                        <div className="text-sm text-gray-600">${Number(b.amount).toFixed(2)}</div>
+                      </div>
+                      <div className="flex items-center justify-between mt-2">
+                        <div className="text-xs text-gray-500">{b.createdAt ? new Date(b.createdAt).toLocaleString() : ""}</div>
+                        <button className={buttonSecondary} onClick={() => cancelBet(b.id)} disabled={raceLocked}>Delete</button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          ) : null}
+        </div>
+
+        {mode === "TERMINAL" ? (
+          <div className="rounded-2xl border p-4 space-y-3">
+            <div className="flex items-center justify-between">
+              <div className="font-semibold">All bets</div>
+              <div className="text-sm text-gray-600">Total: ${totalAllBets.toFixed(2)}</div>
+            </div>
+            {bets.length === 0 ? <div className="text-sm text-gray-600">No bets yet.</div> : (
+              <div className="space-y-2">
+                {bets.slice().reverse().map((b) => (
+                  <div key={b.id} className="rounded-2xl border p-3">
+                    <div className="flex items-start justify-between gap-3">
+                      <div className="font-medium">{b.bettor} - {b.betType} - {(b.picks || []).join(" > ")}</div>
+                      <div className="text-sm text-gray-600">${Number(b.amount).toFixed(2)}</div>
+                    </div>
+                    <div className="flex items-center justify-between mt-2">
+                      <div className="text-xs text-gray-500">{b.createdAt ? new Date(b.createdAt).toLocaleString() : ""}</div>
+                      <button className={buttonSecondary} onClick={() => cancelBet(b.id)}>Cancel</button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        ) : null}
+
+        {mode === "TERMINAL" ? (
+          <div className="rounded-2xl border p-4 space-y-4">
+            <div className="font-semibold">Official results + payouts</div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              <PickSelect label="1st" value={results.first} onChange={(v) => updateResultsField({ first: v })} disabled={false} />
+              <PickSelect label="2nd" value={results.second} onChange={(v) => updateResultsField({ second: v })} disabled={false} />
+              <PickSelect label="3rd" value={results.third} onChange={(v) => updateResultsField({ third: v })} disabled={false} />
+              <PickSelect label="4th (Superfecta)" value={results.fourth} onChange={(v) => updateResultsField({ fourth: v })} disabled={false} />
+            </div>
+
+            <div className="rounded-2xl border p-3 space-y-2">
+              <div className="font-semibold">Payout ledger</div>
+              <div className="text-xs text-gray-600">Totals must satisfy: Total won + carryover = total spent.</div>
+
+              <div className="overflow-x-auto">
+                <table className="w-full text-sm">
+                  <thead>
+                    <tr className="text-left border-b">
+                      <th className="py-2 pr-2">Person</th>
+                      <th className="py-2 pr-2">Spent</th>
+                      <th className="py-2 pr-2">Won</th>
+                      <th className="py-2">Net</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {payoutLedger.rows.map((r) => (
+                      <tr key={r.person} className="border-b last:border-b-0">
+                        <td className="py-2 pr-2 font-medium">{r.person}</td>
+                        <td className="py-2 pr-2">${r.spent.toFixed(2)}</td>
+                        <td className="py-2 pr-2">${r.won.toFixed(2)}</td>
+                        <td className="py-2">${r.net.toFixed(2)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 text-sm">
+                <div className="rounded-2xl border p-2">
+                  <div className="text-xs text-gray-600">Total spent</div>
+                  <div className="font-semibold">${payoutLedger.totalSpent.toFixed(2)}</div>
+                </div>
+                <div className="rounded-2xl border p-2">
+                  <div className="text-xs text-gray-600">Total won</div>
+                  <div className="font-semibold">${payoutLedger.totalWon.toFixed(2)}</div>
+                </div>
+                <div className="rounded-2xl border p-2">
+                  <div className="text-xs text-gray-600">Carryover</div>
+                  <div className="font-semibold">${payoutLedger.carryover.toFixed(2)}</div>
+                </div>
+              </div>
+
+              <div className="text-xs text-gray-600">
+                Check: ${payoutLedger.totalWon.toFixed(2)} + ${payoutLedger.carryover.toFixed(2)} = ${payoutLedger.totalSpent.toFixed(2)}
+              </div>
+            </div>
+          </div>
+        ) : null}
+
+        <div className="text-xs text-gray-500 pb-10">
+          If participants still do not appear on Bettor phones: confirm they are opening the QR link for the same room code shown on Terminal.
         </div>
       </div>
     </div>

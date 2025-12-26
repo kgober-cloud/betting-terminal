@@ -4,7 +4,6 @@ import QRCode from "qrcode";
 // =====================
 // Firebase (cloud sync)
 // =====================
-// Your Firebase web config. Cloud sync works when you use a room code.
 const FIREBASE_CONFIG = {
   apiKey: "AIzaSyBcWTH6h_xDqfxAUYPHm8mXNNb-vMAWgNM",
   authDomain: "betting-terminal.firebaseapp.com",
@@ -57,6 +56,7 @@ const BET_TYPES = [
   { key: "WIN", label: "Win" },
   { key: "PLACE", label: "Place" },
   { key: "SHOW", label: "Show" },
+  { key: "WPS", label: "WPS (Win/Place/Show)" },
   { key: "EXACTA", label: "Exacta" },
   { key: "TRIFECTA", label: "Trifecta" },
   { key: "SUPERFECTA", label: "Superfecta" },
@@ -164,9 +164,7 @@ function themeByKey(key) {
 
 function csvEscape(v) {
   const s = String(v ?? "");
-  const needsQuotes = s.includes("
-") || s.includes("
-") || s.includes(",") || s.includes('"');
+  const needsQuotes = s.includes("\n") || s.includes("\r") || s.includes(",") || s.includes('"');
   if (!needsQuotes) return s;
   return `"${s.split('"').join('""')}"`;
 }
@@ -215,9 +213,6 @@ export default function BettingTerminal() {
   // iPad input focus stability
   const addNameRef = useRef(null);
 
-  // Kiosk mode hides mode switching on-screen
-  const [kioskMode, setKioskMode] = useState(false);
-
   // Sync
   const [cloudReady, setCloudReady] = useState(false);
   const [syncMode, setSyncMode] = useState("LOCAL"); // LOCAL | CLOUD
@@ -233,7 +228,7 @@ export default function BettingTerminal() {
   const [tvThemeKey, setTvThemeKey] = useState("DEFAULT");
 
   // Local persistence
-  const STORAGE_KEY = "betting-terminal-state-v10";
+  const STORAGE_KEY = "betting-terminal-state-v11";
   const loadState = () => {
     try {
       const raw = localStorage.getItem(STORAGE_KEY);
@@ -256,8 +251,6 @@ export default function BettingTerminal() {
 
   // denomination selection
   const [denom, setDenom] = useState(persisted?.denom ?? 0.1);
-
-  // amount is always denom
   const amount = denom;
 
   // ordered picks (non-boxed)
@@ -266,9 +259,17 @@ export default function BettingTerminal() {
   const [pick3, setPick3] = useState("");
   const [pick4, setPick4] = useState("");
 
-  // boxing
+  // boxed exotics with optional locked positions
   const [boxed, setBoxed] = useState(false);
   const [boxHorses, setBoxHorses] = useState([]);
+  const [lock1, setLock1] = useState(false);
+  const [lock2, setLock2] = useState(false);
+  const [lock3, setLock3] = useState(false);
+  const [lock4, setLock4] = useState(false);
+  const [lockPick1, setLockPick1] = useState("");
+  const [lockPick2, setLockPick2] = useState("");
+  const [lockPick3, setLockPick3] = useState("");
+  const [lockPick4, setLockPick4] = useState("");
 
   const [raceLocked, setRaceLocked] = useState(false);
 
@@ -369,7 +370,7 @@ export default function BettingTerminal() {
         return;
       }
       try {
-        const dataUrl = await QRCode.toDataURL(bettorUrl, { width: 220, margin: 1 });
+        const dataUrl = await QRCode.toDataURL(bettorUrl, { width: 240, margin: 1 });
         setQrDataUrl(dataUrl);
       } catch {
         setQrDataUrl("");
@@ -395,7 +396,6 @@ export default function BettingTerminal() {
         results,
         boardKey,
         autoRotate,
-        kioskMode,
         terminalGraphic,
         tvThemeKey,
       };
@@ -416,7 +416,6 @@ export default function BettingTerminal() {
     results,
     boardKey,
     autoRotate,
-    kioskMode,
     terminalGraphic,
     tvThemeKey,
   ]);
@@ -460,6 +459,7 @@ export default function BettingTerminal() {
             amount: Number(v.amount ?? 0),
             betType: v.betType,
             picks: Array.isArray(v.picks) ? v.picks : [],
+            meta: v.meta || null,
           });
         });
         setBets(rows);
@@ -499,23 +499,60 @@ export default function BettingTerminal() {
   // Derived helpers
   // -----------------
   const isExotic = betType === "EXACTA" || betType === "TRIFECTA" || betType === "SUPERFECTA";
+  const isWPS = betType === "WPS";
 
   const picksNeeded = useMemo(() => {
-    if (betType === "WIN" || betType === "PLACE" || betType === "SHOW") return 1;
+    if (betType === "WIN" || betType === "PLACE" || betType === "SHOW" || betType === "WPS") return 1;
     if (betType === "EXACTA") return 2;
     if (betType === "TRIFECTA") return 3;
     if (betType === "SUPERFECTA") return 4;
     return 1;
   }, [betType]);
 
-  const currentPicks = useMemo(() => [pick1, pick2, pick3, pick4].slice(0, picksNeeded), [pick1, pick2, pick3, pick4, picksNeeded]);
+  const currentPicks = useMemo(
+    () => [pick1, pick2, pick3, pick4].slice(0, picksNeeded),
+    [pick1, pick2, pick3, pick4, picksNeeded]
+  );
 
-  const boxCombos = useMemo(() => {
+  const lockedPicks = useMemo(() => {
+    const arr = [null, null, null, null];
+    if (lock1) arr[0] = lockPick1 || null;
+    if (lock2) arr[1] = lockPick2 || null;
+    if (lock3) arr[2] = lockPick3 || null;
+    if (lock4) arr[3] = lockPick4 || null;
+    return arr.slice(0, picksNeeded);
+  }, [lock1, lock2, lock3, lock4, lockPick1, lockPick2, lockPick3, lockPick4, picksNeeded]);
+
+  const lockedSet = useMemo(() => new Set(lockedPicks.filter(Boolean)), [lockedPicks]);
+
+  const ticketsFromLockedBox = useMemo(() => {
     if (!boxed || !isExotic) return [];
-    const horses = boxHorses.filter(Boolean);
-    if (horses.length < picksNeeded) return [];
-    return permutations(horses, picksNeeded);
-  }, [boxed, isExotic, boxHorses, picksNeeded]);
+    const n = picksNeeded;
+
+    // validate locks (no duplicates)
+    const lockedOnly = lockedPicks.filter(Boolean);
+    if (new Set(lockedOnly).size !== lockedOnly.length) return [];
+
+    const openIdx = [];
+    for (let i = 0; i < n; i++) if (!lockedPicks[i]) openIdx.push(i);
+
+    // if everything is locked, single ticket
+    if (openIdx.length === 0) return [lockedPicks.slice(0, n)];
+
+    const available = boxHorses.filter((h) => h && !lockedSet.has(h));
+    if (available.length < openIdx.length) return [];
+
+    const perms = permutations(available, openIdx.length);
+    const out = [];
+    for (const p of perms) {
+      const ticket = lockedPicks.slice(0, n).map((x) => x || null);
+      for (let j = 0; j < openIdx.length; j++) ticket[openIdx[j]] = p[j];
+      // no duplicates overall
+      if (new Set(ticket).size !== ticket.length) continue;
+      out.push(ticket);
+    }
+    return out;
+  }, [boxed, isExotic, picksNeeded, lockedPicks, boxHorses, lockedSet]);
 
   const canAddBet = useMemo(() => {
     if (raceLocked) return false;
@@ -523,23 +560,36 @@ export default function BettingTerminal() {
     if (!amount || amount <= 0) return false;
     if (enforceMaxBet && amount > maxBet) return false;
 
-    if (boxed && isExotic) {
-      if (boxCombos.length === 0) return false;
-      if (boxCombos.length > 120) return false;
+    if (isExotic && boxed) {
+      if (ticketsFromLockedBox.length === 0) return false;
+      if (ticketsFromLockedBox.length > 120) return false;
       return true;
     }
 
+    // Non-boxed
     if (currentPicks.some((p) => !p)) return false;
     if (new Set(currentPicks).size !== currentPicks.length) return false;
     return true;
-  }, [raceLocked, bettor, amount, enforceMaxBet, maxBet, boxed, isExotic, boxCombos.length, currentPicks]);
-
-  const poolFor = (type) => bets.filter((b) => b.betType === type);
+  }, [
+    raceLocked,
+    bettor,
+    amount,
+    enforceMaxBet,
+    maxBet,
+    isExotic,
+    boxed,
+    ticketsFromLockedBox.length,
+    currentPicks,
+  ]);
 
   const poolsTotals = useMemo(() => {
     const totals = {};
-    for (const t of BET_TYPES.map((x) => x.key)) {
-      totals[t] = poolFor(t).reduce((s, b) => s + b.amount, 0);
+    for (const t of ["WIN", "PLACE", "SHOW", "EXACTA", "TRIFECTA", "SUPERFECTA"]) totals[t] = 0;
+
+    for (const b of bets) {
+      if (!b || !b.betType) continue;
+      const t = b.betType;
+      if (totals[t] !== undefined) totals[t] += Number(b.amount || 0);
     }
     return totals;
   }, [bets]);
@@ -553,6 +603,7 @@ export default function BettingTerminal() {
 
   const totalMyBets = useMemo(() => myBets.reduce((s, b) => s + Number(b.amount || 0), 0), [myBets]);
 
+  // amounts per outcome for odds boards
   const amountsOn = useMemo(() => {
     const out = {
       WIN: new Map(),
@@ -565,12 +616,16 @@ export default function BettingTerminal() {
 
     for (const b of bets) {
       const t = b.betType;
+      if (!(t in out)) continue;
+
       if (t === "WIN" || t === "PLACE" || t === "SHOW") {
-        const horse = b.picks[0];
-        out[t].set(horse, (out[t].get(horse) ?? 0) + b.amount);
+        const horse = (b.picks || [])[0];
+        if (!horse) continue;
+        out[t].set(horse, (out[t].get(horse) ?? 0) + Number(b.amount || 0));
       } else {
         const key = (b.picks || []).join(" > ");
-        out[t].set(key, (out[t].get(key) ?? 0) + b.amount);
+        if (!key) continue;
+        out[t].set(key, (out[t].get(key) ?? 0) + Number(b.amount || 0));
       }
     }
 
@@ -621,15 +676,20 @@ export default function BettingTerminal() {
   // -----------------
   // Actions
   // -----------------
+  const saveParticipants = async (next) => {
+    setParticipants(next);
+    if (syncMode === "CLOUD") await pushRoomUpdate({ participants: next });
+  };
+
   const addParticipant = async () => {
     const trimmed = nameInput.trim();
     if (!trimmed) return;
     if (participants.includes(trimmed)) return;
 
     const next = [...participants, trimmed];
-    setParticipants(next);
     setNameInput("");
 
+    // keep focus stable on iPad Safari
     setTimeout(() => {
       try {
         addNameRef.current?.focus();
@@ -639,44 +699,88 @@ export default function BettingTerminal() {
     }, 0);
 
     if (!bettor) setBettor(trimmed);
-
-    if (syncMode === "CLOUD") await pushRoomUpdate({ participants: next });
+    await saveParticipants(next);
   };
 
-  const addBet = async () => {
-    if (!canAddBet) return;
+  const deleteParticipant = async (name) => {
+    const next = participants.filter((p) => p !== name);
+    await saveParticipants(next);
+    if (bettor === name) setBettor("");
+    // Note: existing bets remain; they will still display under that bettor name if selected.
+  };
 
-    const perTicket = Number(amount);
-    const tickets = boxed && isExotic ? boxCombos : [currentPicks];
-
+  const addBetCloudOrLocal = async (ticket) => {
     // LOCAL
     if (!(syncMode === "CLOUD" && cloudReady && roomCode)) {
       const now = new Date().toISOString();
-      const rows = tickets.map((picks) => ({
-        id: crypto?.randomUUID ? crypto.randomUUID() : String(Date.now()) + Math.random().toString(16).slice(2),
-        createdAt: now,
-        bettor,
-        amount: perTicket,
-        betType,
-        picks,
-      }));
-      setBets((prev) => [...prev, ...rows]);
+      setBets((prev) => [
+        ...prev,
+        {
+          id: crypto?.randomUUID ? crypto.randomUUID() : String(Date.now()) + Math.random().toString(16).slice(2),
+          createdAt: now,
+          ...ticket,
+        },
+      ]);
       return;
     }
 
     // CLOUD
     const betsRef = collectionFn(firestore, "rooms", roomCode, "bets");
-    await Promise.all(
-      tickets.map((picks) =>
-        addDocFn(betsRef, {
+    await addDocFn(betsRef, {
+      ...ticket,
+      createdAt: serverTimestampFn(),
+    });
+  };
+
+  const addBet = async () => {
+    if (!canAddBet) return;
+
+    // WPS expands into 3 bets
+    if (isWPS) {
+      const horse = currentPicks[0];
+      if (!horse) return;
+
+      const base = {
+        bettor,
+        amount: Number(amount),
+        picks: [horse],
+        meta: { parent: "WPS" },
+      };
+
+      await addBetCloudOrLocal({ ...base, betType: "WIN" });
+      await addBetCloudOrLocal({ ...base, betType: "PLACE" });
+      await addBetCloudOrLocal({ ...base, betType: "SHOW" });
+      return;
+    }
+
+    // Exotics boxed with locks
+    if (isExotic && boxed) {
+      if (ticketsFromLockedBox.length === 0) return;
+      if (ticketsFromLockedBox.length > 120) return;
+
+      for (const picks of ticketsFromLockedBox) {
+        await addBetCloudOrLocal({
           bettor,
-          amount: perTicket,
+          amount: Number(amount),
           betType,
           picks,
-          createdAt: serverTimestampFn(),
-        })
-      )
-    );
+          meta: {
+            boxed: true,
+            locks: lockedPicks,
+          },
+        });
+      }
+      return;
+    }
+
+    // Standard single ticket
+    await addBetCloudOrLocal({
+      bettor,
+      amount: Number(amount),
+      betType,
+      picks: currentPicks,
+      meta: null,
+    });
   };
 
   const cancelBet = async (betId) => {
@@ -691,6 +795,71 @@ export default function BettingTerminal() {
     // CLOUD
     const betRef = docFn(firestore, "rooms", roomCode, "bets", betId);
     await deleteDocFn(betRef);
+  };
+
+  const cancelAllBets = async () => {
+    // LOCAL
+    if (!(syncMode === "CLOUD" && cloudReady && roomCode)) {
+      setBets([]);
+      return;
+    }
+    // CLOUD: delete visible bet docs
+    for (const b of bets) {
+      if (!b?.id) continue;
+      const betRef = docFn(firestore, "rooms", roomCode, "bets", b.id);
+      // eslint-disable-next-line no-await-in-loop
+      await deleteDocFn(betRef);
+    }
+  };
+
+  const nextRace = async () => {
+    // Clear bets and results, keep participants
+    setResults({ first: "", second: "", third: "", fourth: "" });
+    setRaceLocked(false);
+
+    await cancelAllBets();
+
+    if (syncMode === "CLOUD") {
+      await pushRoomUpdate({
+        raceLocked: false,
+        results: { first: "", second: "", third: "", fourth: "" },
+      });
+    }
+  };
+
+  const newRace = async () => {
+    // Delete all participants, clear bets and results
+    setResults({ first: "", second: "", third: "", fourth: "" });
+    setRaceLocked(false);
+    setBettor("");
+    setNameInput("");
+    setBetType("WIN");
+    setDenom(0.1);
+    setPick1("");
+    setPick2("");
+    setPick3("");
+    setPick4("");
+    setBoxed(false);
+    setBoxHorses([]);
+    setLock1(false);
+    setLock2(false);
+    setLock3(false);
+    setLock4(false);
+    setLockPick1("");
+    setLockPick2("");
+    setLockPick3("");
+    setLockPick4("");
+
+    await cancelAllBets();
+    await saveParticipants([]);
+
+    if (syncMode === "CLOUD") {
+      await pushRoomUpdate({
+        participants: [],
+        raceLocked: false,
+        results: { first: "", second: "", third: "", fourth: "" },
+      });
+    }
   };
 
   const lockRace = async (locked) => {
@@ -719,54 +888,25 @@ export default function BettingTerminal() {
     if (syncMode === "CLOUD") await pushRoomUpdate({ tvThemeKey: key });
   };
 
-  const newRace = async () => {
-    // LOCAL
-    if (syncMode !== "CLOUD") {
-      setBets([]);
-      setResults({ first: "", second: "", third: "", fourth: "" });
-      setRaceLocked(false);
-      setBetType("WIN");
-      setBettor("");
-      setDenom(0.1);
-      setPick1("");
-      setPick2("");
-      setPick3("");
-      setPick4("");
-      setBoxed(false);
-      setBoxHorses([]);
-      return;
-    }
-
-    // CLOUD: easiest is new room
-    const rc = randomRoomCode();
-    setRoomCode(rc);
-    setRoomInput(rc);
-    setBets([]);
-    setResults({ first: "", second: "", third: "", fourth: "" });
-    setRaceLocked(false);
-    await pushRoomUpdate({
-      participants,
-      raceLocked: false,
-      results: { first: "", second: "", third: "", fourth: "" },
-      terminalGraphic: terminalGraphic ?? null,
-      tvThemeKey: tvThemeKey ?? "DEFAULT",
-    });
-  };
-
   const exportCsv = () => {
     const lines = [];
     lines.push(["Room", roomCode || "(local)"].map(csvEscape).join(","));
-    lines.push(["Total Bets", totalAllBets.toFixed(2)].map(csvEscape).join(","));
+    lines.push(["All Bets Total", totalAllBets.toFixed(2)].map(csvEscape).join(","));
     lines.push(["", ""].join(","));
 
     lines.push(["Bets", ""].join(","));
     lines.push(["Time", "Bettor", "Type", "Picks", "Amount"].map(csvEscape).join(","));
     for (const b of bets) {
-      lines.push([b.createdAt, b.bettor, b.betType, (b.picks || []).join(" > "), Number(b.amount).toFixed(2)].map(csvEscape).join(","));
+      lines.push([
+        b.createdAt,
+        b.bettor,
+        b.betType,
+        (b.picks || []).join(" > "),
+        Number(b.amount).toFixed(2),
+      ].map(csvEscape).join(","));
     }
 
-    const blob = new Blob([lines.join("
-")], { type: "text/csv;charset=utf-8" });
+    const blob = new Blob([lines.join("\n")], { type: "text/csv;charset=utf-8" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
@@ -795,14 +935,14 @@ export default function BettingTerminal() {
     if (syncMode === "CLOUD") await pushRoomUpdate({ terminalGraphic: null });
   };
 
-  // TV auto rotate
+  // TV auto rotate boards every 5 seconds (as requested)
   useEffect(() => {
     if (mode !== "TV") return;
     if (!autoRotate) return;
     const keys = PUBLIC_BOARDS.map((b) => b.key);
     const i = keys.indexOf(boardKey);
     const next = keys[(i + 1 + keys.length) % keys.length];
-    const handle = setTimeout(() => setBoardKey(next), 6000);
+    const handle = setTimeout(() => setBoardKey(next), 5000);
     return () => clearTimeout(handle);
   }, [mode, autoRotate, boardKey]);
 
@@ -811,8 +951,22 @@ export default function BettingTerminal() {
   // -----------------
   const smallSelect = "border rounded-2xl p-3 text-base w-full";
   const smallInput = "border rounded-2xl p-3 text-base w-full";
-  const buttonPrimary = "rounded-2xl px-4 py-3 text-base font-semibold bg-black text-white disabled:opacity-40 disabled:cursor-not-allowed";
-  const buttonSecondary = "rounded-2xl px-4 py-3 text-base font-semibold border disabled:opacity-40 disabled:cursor-not-allowed";
+  const buttonPrimary =
+    "rounded-2xl px-4 py-3 text-base font-semibold bg-black text-white disabled:opacity-40 disabled:cursor-not-allowed";
+  const buttonSecondary =
+    "rounded-2xl px-4 py-3 text-base font-semibold border disabled:opacity-40 disabled:cursor-not-allowed";
+  const chip =
+    "inline-flex items-center gap-2 px-3 py-1 rounded-full border text-sm";
+
+  const formatOdds = (odds) => {
+    if (!odds || odds <= 0) return "-";
+    return `${odds.toFixed(2)}-1`;
+  };
+
+  const formatPayoutPerTenCents = (payoutPerDollar) => {
+    if (!payoutPerDollar || payoutPerDollar <= 0) return "-";
+    return `$${(payoutPerDollar * 0.1).toFixed(2)} per $0.10`;
+  };
 
   const PickSelect = ({ label, value, onChange, disabled }) => (
     <div className="space-y-1">
@@ -828,23 +982,119 @@ export default function BettingTerminal() {
     </div>
   );
 
-  const formatOdds = (odds) => {
-    if (!odds || odds <= 0) return "-";
-    return `${odds.toFixed(2)}-1`;
-  };
+  const DenomPicker = () => (
+    <div className="space-y-2">
+      <div className="text-sm font-medium">Denomination</div>
+      <div className="flex flex-wrap gap-2">
+        {DENOMS.map((d) => {
+          const label = d === 1 ? "$1" : `$${d.toFixed(2)}`;
+          const active = denom === d;
+          return (
+            <label
+              key={d}
+              className={
+                "flex items-center gap-2 border rounded-2xl px-3 py-2 text-sm select-none " +
+                (active ? "bg-black text-white" : "")
+              }
+            >
+              <input type="checkbox" checked={active} onChange={() => setDenom(d)} disabled={raceLocked} />
+              {label}
+            </label>
+          );
+        })}
+      </div>
+      <div className="text-xs text-gray-600">
+        Amount per ticket. WPS places 3 tickets. Boxed exotics can place many tickets.
+      </div>
+    </div>
+  );
 
-  const formatPayoutPerTenCents = (payoutPerDollar) => {
-    if (!payoutPerDollar || payoutPerDollar <= 0) return "-";
-    return `$${(payoutPerDollar * 0.1).toFixed(2)} per $0.10`;
-  };
+  const BettorSummary = () => (
+    <div className="rounded-2xl border p-4 space-y-3">
+      <div className="flex items-center justify-between">
+        <div className="font-semibold">Your bets</div>
+        <div className="text-sm text-gray-600">Your total: ${totalMyBets.toFixed(2)}</div>
+      </div>
+
+      {myBets.length === 0 ? (
+        <div className="text-sm text-gray-600">No bets yet.</div>
+      ) : (
+        <div className="space-y-2">
+          {myBets
+            .slice()
+            .reverse()
+            .map((b) => (
+              <div key={b.id} className="rounded-2xl border p-3">
+                <div className="flex items-start justify-between gap-3">
+                  <div className="font-medium">
+                    {b.betType}
+                    {b.meta?.parent === "WPS" ? " (WPS)" : ""} - {(b.picks || []).join(" > ")}
+                  </div>
+                  <div className="text-sm text-gray-600">${Number(b.amount).toFixed(2)}</div>
+                </div>
+                <div className="flex items-center justify-between gap-3 mt-2">
+                  <div className="text-xs text-gray-500">
+                    {b.createdAt ? new Date(b.createdAt).toLocaleString() : ""}
+                  </div>
+                  <button className={buttonSecondary} onClick={() => cancelBet(b.id)} disabled={raceLocked}>
+                    Delete
+                  </button>
+                </div>
+              </div>
+            ))}
+        </div>
+      )}
+    </div>
+  );
+
+  const TerminalBetList = () => (
+    <div className="rounded-2xl border p-4 space-y-3">
+      <div className="flex items-center justify-between">
+        <div className="font-semibold">All bets</div>
+        <div className="text-sm text-gray-600">Total: ${totalAllBets.toFixed(2)}</div>
+      </div>
+
+      {bets.length === 0 ? (
+        <div className="text-sm text-gray-600">No bets yet.</div>
+      ) : (
+        <div className="space-y-2">
+          {bets
+            .slice()
+            .reverse()
+            .map((b) => (
+              <div key={b.id} className="rounded-2xl border p-3">
+                <div className="flex items-start justify-between gap-3">
+                  <div className="font-medium">
+                    {b.bettor} - {b.betType}
+                    {b.meta?.parent === "WPS" ? " (WPS)" : ""} - {(b.picks || []).join(" > ")}
+                  </div>
+                  <div className="text-sm text-gray-600">${Number(b.amount).toFixed(2)}</div>
+                </div>
+                <div className="flex items-center justify-between gap-3 mt-2">
+                  <div className="text-xs text-gray-500">
+                    {b.createdAt ? new Date(b.createdAt).toLocaleString() : ""}
+                  </div>
+                  <button className={buttonSecondary} onClick={() => cancelBet(b.id)}>
+                    Cancel
+                  </button>
+                </div>
+              </div>
+            ))}
+        </div>
+      )}
+    </div>
+  );
 
   const Header = () => (
     <div className="flex items-start justify-between gap-3">
       <div>
         <div className="text-2xl font-black">Betting Terminal</div>
-        <div className="text-sm text-gray-600">Win / Place / Show + Exacta / Trifecta / Superfecta</div>
+        <div className="text-sm text-gray-600">
+          Win/Place/Show + WPS + Exacta/Trifecta/Superfecta (boxed with optional locks)
+        </div>
         <div className="text-xs text-gray-500 mt-1">
-          Mode: <span className="font-semibold">{mode}</span> | Sync: <span className="font-semibold">{syncMode}</span>
+          Mode: <span className="font-semibold">{mode}</span> | Sync:{" "}
+          <span className="font-semibold">{syncMode}</span>
           {roomCode ? (
             <>
               {" "} | Room: <span className="font-semibold">{roomCode}</span>
@@ -853,18 +1103,23 @@ export default function BettingTerminal() {
         </div>
       </div>
 
-      {mode === "TERMINAL" && !kioskMode ? (
+      {mode === "TERMINAL" ? (
         <div className="flex flex-col sm:flex-row gap-2 items-end">
-          <button onClick={newRace} className={buttonSecondary}>New Race</button>
-          <button onClick={exportCsv} className={buttonSecondary} disabled={bets.length === 0}>Export CSV</button>
+          <button onClick={newRace} className={buttonSecondary}>
+            New Race (clear participants)
+          </button>
+          <button onClick={nextRace} className={buttonSecondary} disabled={bets.length === 0 && results.first === "" && results.second === "" && results.third === "" && results.fourth === ""}>
+            Next Race (keep participants)
+          </button>
+          <button onClick={exportCsv} className={buttonSecondary} disabled={bets.length === 0}>
+            Export CSV
+          </button>
         </div>
       ) : null}
     </div>
   );
 
   const ModeSwitcher = () => {
-    if (kioskMode) return null;
-
     const btn = (m) => (
       <button
         className={"rounded-2xl px-4 py-2 text-sm font-semibold border " + (mode === m ? "bg-black text-white" : "")}
@@ -879,23 +1134,21 @@ export default function BettingTerminal() {
         {btn("TERMINAL")}
         {btn("BETTOR")}
         {btn("TV")}
-        <label className="flex items-center gap-2 text-sm ml-2">
-          <input type="checkbox" checked={kioskMode} onChange={(e) => setKioskMode(e.target.checked)} />
-          Kiosk mode
-        </label>
       </div>
     );
   };
 
   const RoomPanel = () => {
-    if (mode !== "TERMINAL" || kioskMode) return null;
+    if (mode !== "TERMINAL") return null;
 
     return (
       <div className="rounded-2xl border p-4 space-y-3">
-        <div className="font-semibold">Multi-phone betting</div>
+        <div className="font-semibold">Multi-phone setup</div>
 
         {!cloudReady ? (
-          <div className="text-sm text-gray-700">Cloud not ready - confirm package.json includes firebase and redeploy.</div>
+          <div className="text-sm text-gray-700">
+            Cloud not ready - confirm package.json includes firebase and redeploy.
+          </div>
         ) : null}
 
         <div className="flex flex-col sm:flex-row gap-2">
@@ -955,12 +1208,10 @@ export default function BettingTerminal() {
               </option>
             ))}
           </select>
-          <div className="text-xs text-gray-600">TV link includes theme.</div>
         </div>
 
         <div className="rounded-2xl border p-3 space-y-2">
           <div className="font-semibold text-sm">Terminal / TV graphic</div>
-          <div className="text-xs text-gray-600">Upload a logo/graphic shown on Terminal and TV.</div>
           <input type="file" accept="image/*" onChange={(e) => onUploadGraphic(e.target.files?.[0])} className="text-sm" />
           {terminalGraphic ? (
             <div className="space-y-2">
@@ -977,16 +1228,14 @@ export default function BettingTerminal() {
             <div className="text-sm font-semibold">Bettor QR</div>
             <div className="text-xs text-gray-600 break-all">{bettorUrl || "(loading...)"}</div>
             {qrDataUrl ? (
-              <img src={qrDataUrl} alt="Bettor QR" className="border rounded-2xl w-[220px] h-[220px]" />
+              <img src={qrDataUrl} alt="Bettor QR" className="border rounded-2xl w-[240px] h-[240px]" />
             ) : (
               <div className="text-xs text-red-600">QR not ready - confirm qrcode dependency is installed.</div>
             )}
-            <div className="text-xs text-gray-600">Guests must open the QR link with the same room code.</div>
           </div>
           <div className="space-y-2">
             <div className="text-sm font-semibold">TV link</div>
             <div className="text-xs text-gray-600 break-all">{tvUrl || "(loading...)"}</div>
-            <div className="text-xs text-gray-600">Open this and screen share to your TV.</div>
           </div>
         </div>
       </div>
@@ -1000,7 +1249,7 @@ export default function BettingTerminal() {
       <div className="rounded-2xl border p-4 space-y-3">
         <div className="flex items-center justify-between gap-3">
           <h2 className="font-semibold">Participants</h2>
-          <div className="text-xs text-gray-600">Participants are the horses</div>
+          <div className="text-xs text-gray-600">Tap X to remove</div>
         </div>
 
         <div className="flex flex-col sm:flex-row gap-2">
@@ -1025,7 +1274,16 @@ export default function BettingTerminal() {
             <div className="text-sm text-gray-600">Add at least 2 participants.</div>
           ) : (
             participants.map((p) => (
-              <span key={p} className="px-3 py-1 rounded-full border text-sm">{p}</span>
+              <span key={p} className={chip}>
+                {p}
+                <button
+                  className="border rounded-full w-6 h-6 leading-[1] flex items-center justify-center"
+                  onClick={() => deleteParticipant(p)}
+                  title="Remove participant"
+                >
+                  ×
+                </button>
+              </span>
             ))
           )}
         </div>
@@ -1033,109 +1291,20 @@ export default function BettingTerminal() {
     );
   };
 
-  const DenomPicker = () => (
-    <div className="space-y-2">
-      <div className="text-sm font-medium">Denomination</div>
-      <div className="flex flex-wrap gap-2">
-        {DENOMS.map((d) => {
-          const label = d === 1 ? "$1" : `$${d.toFixed(2)}`;
-          const active = denom === d;
-          return (
-            <label
-              key={d}
-              className={
-                "flex items-center gap-2 border rounded-2xl px-3 py-2 text-sm select-none " +
-                (active ? "bg-black text-white" : "")
-              }
-            >
-              <input type="checkbox" checked={active} onChange={() => setDenom(d)} disabled={raceLocked} />
-              {label}
-            </label>
-          );
-        })}
-      </div>
-      <div className="text-xs text-gray-600">Amount per ticket. Boxed bets create multiple tickets.</div>
+  const LockRow = ({ label, enabled, setEnabled, pick, setPick, disabled }) => (
+    <div className="rounded-2xl border p-3 space-y-2">
+      <label className="flex items-center gap-2 text-sm">
+        <input type="checkbox" checked={enabled} onChange={(e) => setEnabled(e.target.checked)} disabled={disabled} />
+        Lock {label}
+      </label>
+      <select className={smallSelect} value={pick} onChange={(e) => setPick(e.target.value)} disabled={disabled || !enabled}>
+        <option value="">Select</option>
+        {participants.map((p) => (
+          <option key={p} value={p}>{p}</option>
+        ))}
+      </select>
     </div>
   );
-
-  const BettorSummary = () => (
-    <div className="rounded-2xl border p-4 space-y-3">
-      <div className="flex items-center justify-between">
-        <div className="font-semibold">Your bets</div>
-        <div className="text-sm text-gray-600">Your total: ${totalMyBets.toFixed(2)}</div>
-      </div>
-
-      {myBets.length === 0 ? (
-        <div className="text-sm text-gray-600">No bets yet.</div>
-      ) : (
-        <div className="space-y-2">
-          {myBets
-            .slice()
-            .reverse()
-            .map((b) => (
-              <div key={b.id} className="rounded-2xl border p-3">
-                <div className="flex items-start justify-between gap-3">
-                  <div className="font-medium">{b.betType} - {(b.picks || []).join(" > ")}</div>
-                  <div className="text-sm text-gray-600">${Number(b.amount).toFixed(2)}</div>
-                </div>
-                <div className="flex items-center justify-between gap-3 mt-2">
-                  <div className="text-xs text-gray-500">{b.createdAt ? new Date(b.createdAt).toLocaleString() : ""}</div>
-                  <button
-                    className={buttonSecondary}
-                    onClick={() => cancelBet(b.id)}
-                    disabled={raceLocked}
-                    title={raceLocked ? "Betting locked" : "Delete this bet"}
-                  >
-                    Delete
-                  </button>
-                </div>
-              </div>
-            ))}
-        </div>
-      )}
-    </div>
-  );
-
-  const TerminalBetList = () => {
-    if (mode !== "TERMINAL") return null;
-
-    return (
-      <div className="rounded-2xl border p-4 space-y-3">
-        <div className="flex items-center justify-between">
-          <div className="font-semibold">All bets</div>
-          <div className="text-sm text-gray-600">Total: ${totalAllBets.toFixed(2)}</div>
-        </div>
-
-        {bets.length === 0 ? (
-          <div className="text-sm text-gray-600">No bets yet.</div>
-        ) : (
-          <div className="space-y-2">
-            {bets
-              .slice()
-              .reverse()
-              .map((b) => (
-                <div key={b.id} className="rounded-2xl border p-3">
-                  <div className="flex items-start justify-between gap-3">
-                    <div className="font-medium">{b.bettor} - {b.betType} - {(b.picks || []).join(" > ")}</div>
-                    <div className="text-sm text-gray-600">${Number(b.amount).toFixed(2)}</div>
-                  </div>
-                  <div className="flex items-center justify-between gap-3 mt-2">
-                    <div className="text-xs text-gray-500">{b.createdAt ? new Date(b.createdAt).toLocaleString() : ""}</div>
-                    <button
-                      className={buttonSecondary}
-                      onClick={() => cancelBet(b.id)}
-                      title={raceLocked ? "Betting locked" : "Cancel this bet"}
-                    >
-                      Cancel
-                    </button>
-                  </div>
-                </div>
-              ))}
-          </div>
-        )}
-      </div>
-    );
-  };
 
   const BettingPanel = () => {
     if (mode !== "TERMINAL" && mode !== "BETTOR") return null;
@@ -1162,9 +1331,7 @@ export default function BettingTerminal() {
                 <option key={p} value={p}>{p}</option>
               ))}
             </select>
-            {participants.length === 0 ? (
-              <div className="text-xs text-red-600">Host must add participants first.</div>
-            ) : null}
+            {participants.length === 0 ? <div className="text-xs text-red-600">Host must add participants first.</div> : null}
           </div>
 
           <div className="space-y-1">
@@ -1181,6 +1348,14 @@ export default function BettingTerminal() {
                 setPick4("");
                 setBoxed(false);
                 setBoxHorses([]);
+                setLock1(false);
+                setLock2(false);
+                setLock3(false);
+                setLock4(false);
+                setLockPick1("");
+                setLockPick2("");
+                setLockPick3("");
+                setLockPick4("");
               }}
               disabled={raceLocked}
             >
@@ -1193,7 +1368,7 @@ export default function BettingTerminal() {
 
         <DenomPicker />
 
-        {mode === "TERMINAL" && !kioskMode ? (
+        {mode === "TERMINAL" ? (
           <div className="flex flex-col sm:flex-row gap-3 sm:items-center sm:justify-between">
             <div className="font-semibold">Limits</div>
             <div className="flex flex-col sm:flex-row gap-2 sm:items-center">
@@ -1203,14 +1378,7 @@ export default function BettingTerminal() {
               </label>
               <div className="flex items-center gap-2">
                 <span className="text-sm text-gray-700">Max</span>
-                <input
-                  type="number"
-                  className="border rounded-2xl p-2 w-28"
-                  value={maxBet}
-                  onChange={(e) => updateMaxBet({ maxBet: Number(e.target.value) })}
-                  min={0.1}
-                  step={0.1}
-                />
+                <input type="number" className="border rounded-2xl p-2 w-28" value={maxBet} onChange={(e) => updateMaxBet({ maxBet: Number(e.target.value) })} min={0.1} step={0.1} />
               </div>
             </div>
           </div>
@@ -1227,36 +1395,56 @@ export default function BettingTerminal() {
                 onChange={(e) => {
                   setBoxed(e.target.checked);
                   setBoxHorses([]);
+                  setLock1(false); setLock2(false); setLock3(false); setLock4(false);
+                  setLockPick1(""); setLockPick2(""); setLockPick3(""); setLockPick4("");
                 }}
                 disabled={raceLocked}
               />
-              Box (any order)
+              Box (with optional locked positions)
             </label>
           ) : null}
 
           {boxed && isExotic ? (
-            <div className="space-y-2">
-              <div className="text-xs text-gray-600">Select {picksNeeded} or more horses. Tickets: {boxCombos.length}. Max 120.</div>
-              <div className="grid grid-cols-2 gap-2">
-                {participants.map((p) => {
-                  const checked = boxHorses.includes(p);
-                  return (
-                    <label key={p} className="flex items-center gap-2 text-sm border rounded-2xl p-2">
-                      <input
-                        type="checkbox"
-                        checked={checked}
-                        onChange={(e) => {
-                          if (e.target.checked) setBoxHorses((h) => [...h, p]);
-                          else setBoxHorses((h) => h.filter((x) => x !== p));
-                        }}
-                        disabled={raceLocked}
-                      />
-                      {p}
-                    </label>
-                  );
-                })}
+            <div className="space-y-3">
+              <div className="text-xs text-gray-600">
+                Tickets: {ticketsFromLockedBox.length}. Max 120. Locked horses are removed from the box list automatically.
               </div>
-              {boxCombos.length > 120 ? <div className="text-xs text-red-600">Too many tickets. Select fewer horses.</div> : null}
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                <LockRow label="1st" enabled={lock1} setEnabled={setLock1} pick={lockPick1} setPick={setLockPick1} disabled={raceLocked} />
+                {picksNeeded >= 2 ? <LockRow label="2nd" enabled={lock2} setEnabled={setLock2} pick={lockPick2} setPick={setLockPick2} disabled={raceLocked} /> : null}
+                {picksNeeded >= 3 ? <LockRow label="3rd" enabled={lock3} setEnabled={setLock3} pick={lockPick3} setPick={setLockPick3} disabled={raceLocked} /> : null}
+                {picksNeeded >= 4 ? <LockRow label="4th" enabled={lock4} setEnabled={setLock4} pick={lockPick4} setPick={setLockPick4} disabled={raceLocked} /> : null}
+              </div>
+
+              <div className="rounded-2xl border p-3 space-y-2">
+                <div className="text-sm font-medium">Box the remaining positions</div>
+                <div className="text-xs text-gray-600">Select horses to permute into any unlocked positions.</div>
+                <div className="grid grid-cols-2 gap-2">
+                  {participants.map((p) => {
+                    const checked = boxHorses.includes(p);
+                    const disabled = lockedSet.has(p);
+                    return (
+                      <label key={p} className={"flex items-center gap-2 text-sm border rounded-2xl p-2 " + (disabled ? "opacity-50" : "")}>
+                        <input
+                          type="checkbox"
+                          checked={checked}
+                          disabled={raceLocked || disabled}
+                          onChange={(e) => {
+                            if (e.target.checked) setBoxHorses((h) => [...h, p]);
+                            else setBoxHorses((h) => h.filter((x) => x !== p));
+                          }}
+                        />
+                        {p}{disabled ? " (locked)" : ""}
+                      </label>
+                    );
+                  })}
+                </div>
+              </div>
+
+              {ticketsFromLockedBox.length > 120 ? (
+                <div className="text-xs text-red-600">Too many tickets - select fewer horses or lock more positions.</div>
+              ) : null}
             </div>
           ) : (
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
@@ -1270,8 +1458,10 @@ export default function BettingTerminal() {
 
         <div className="flex flex-col sm:flex-row gap-2">
           <button onClick={addBet} className={buttonPrimary} disabled={!canAddBet}>Submit bet</button>
-          {boxed && isExotic && boxCombos.length > 0 ? (
-            <div className="text-xs text-gray-600 self-center">Submitting {boxCombos.length} tickets at ${denom.toFixed(2)} each.</div>
+          {isWPS ? (
+            <div className="text-xs text-gray-600 self-center">
+              WPS will place 3 tickets (WIN+PLACE+SHOW) - total ${Number(amount * 3).toFixed(2)}
+            </div>
           ) : null}
         </div>
 
@@ -1281,7 +1471,7 @@ export default function BettingTerminal() {
   };
 
   const TerminalControls = () => {
-    if (mode !== "TERMINAL" || kioskMode) return null;
+    if (mode !== "TERMINAL") return null;
 
     return (
       <div className="rounded-2xl border p-4 space-y-3">
@@ -1299,20 +1489,20 @@ export default function BettingTerminal() {
   };
 
   const ResultsPanel = () => {
-    if (mode !== "TERMINAL" || kioskMode) return null;
+    if (mode !== "TERMINAL") return null;
 
     return (
       <div className="rounded-2xl border p-4 space-y-3">
         <div className="flex items-center justify-between gap-3">
           <h2 className="font-semibold">Official results</h2>
-          <div className="text-xs text-gray-600">Used for payouts and exotics</div>
+          <div className="text-xs text-gray-600">Used for payouts and odds boards</div>
         </div>
 
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-          <PickSelect label="1st" value={results.first} onChange={(v) => updateResults({ first: v })} />
-          <PickSelect label="2nd" value={results.second} onChange={(v) => updateResults({ second: v })} />
-          <PickSelect label="3rd" value={results.third} onChange={(v) => updateResults({ third: v })} />
-          <PickSelect label="4th (Superfecta)" value={results.fourth} onChange={(v) => updateResults({ fourth: v })} />
+          <PickSelect label="1st" value={results.first} onChange={(v) => updateResults({ first: v })} disabled={false} />
+          <PickSelect label="2nd" value={results.second} onChange={(v) => updateResults({ second: v })} disabled={false} />
+          <PickSelect label="3rd" value={results.third} onChange={(v) => updateResults({ third: v })} disabled={false} />
+          <PickSelect label="4th (Superfecta)" value={results.fourth} onChange={(v) => updateResults({ fourth: v })} disabled={false} />
         </div>
       </div>
     );
@@ -1343,19 +1533,31 @@ export default function BettingTerminal() {
     return (
       <div className="min-h-screen" style={{ background: t.bg, color: t.text }}>
         <div className="max-w-6xl mx-auto p-4 sm:p-6 space-y-5">
-          <div className="space-y-2">
-            <div className="text-3xl font-black">Betting Terminal</div>
-            <div className="text-lg" style={{ color: t.muted }}>{header} - live pools, odds, payouts</div>
-            {roomCode ? <div className="text-sm" style={{ color: t.muted }}>Room {roomCode}</div> : null}
-            {terminalGraphic ? (
-              <img src={terminalGraphic} alt="TV graphic" className="max-h-40 rounded-2xl border object-contain w-full" style={{ borderColor: t.border }} />
-            ) : null}
+          <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 items-start">
+            <div className="lg:col-span-2 space-y-2">
+              <div className="text-3xl font-black">Betting Terminal</div>
+              <div className="text-lg" style={{ color: t.muted }}>{header} - live pools, odds, payouts</div>
+              {roomCode ? <div className="text-sm" style={{ color: t.muted }}>Room {roomCode}</div> : null}
+              {terminalGraphic ? (
+                <img src={terminalGraphic} alt="TV graphic" className="max-h-40 rounded-2xl border object-contain w-full" style={{ borderColor: t.border }} />
+              ) : null}
+            </div>
+
+            <div className="rounded-2xl p-4" style={{ border: `1px solid ${t.border}` }}>
+              <div className="font-semibold text-lg">Bettor QR</div>
+              <div className="text-xs" style={{ color: t.muted }}>Scan to bet from your phone</div>
+              {qrDataUrl ? (
+                <img src={qrDataUrl} alt="Bettor QR" className="mt-2 rounded-2xl border w-[240px] h-[240px]" style={{ borderColor: t.border }} />
+              ) : (
+                <div className="mt-2 text-sm" style={{ color: t.muted }}>QR not ready</div>
+              )}
+            </div>
           </div>
 
           <div className="flex flex-wrap gap-2 items-center">
             <label className="flex items-center gap-2 text-sm" style={{ color: t.muted }}>
               <input type="checkbox" checked={autoRotate} onChange={(e) => setAutoRotate(e.target.checked)} />
-              Auto-rotate boards
+              Auto-rotate boards (5s)
             </label>
             <div className="flex flex-wrap gap-2">
               {PUBLIC_BOARDS.map((b) => (
@@ -1379,10 +1581,10 @@ export default function BettingTerminal() {
             <div className="rounded-2xl p-4" style={{ border: `1px solid ${t.border}` }}>
               <div className="font-semibold text-lg">Pools</div>
               <div className="mt-3 space-y-2 text-base">
-                {BET_TYPES.map((bt) => (
-                  <div key={bt.key} className="flex items-center justify-between">
-                    <div>{bt.label}</div>
-                    <div className="font-semibold">${(poolsTotals[bt.key] ?? 0).toFixed(2)}</div>
+                {["WIN", "PLACE", "SHOW", "EXACTA", "TRIFECTA", "SUPERFECTA"].map((k) => (
+                  <div key={k} className="flex items-center justify-between">
+                    <div>{k}</div>
+                    <div className="font-semibold">${(poolsTotals[k] ?? 0).toFixed(2)}</div>
                   </div>
                 ))}
               </div>
@@ -1416,20 +1618,6 @@ export default function BettingTerminal() {
               <div className="mt-3 text-sm" style={{ color: t.muted }}>Theme: {themeByKey(tvThemeKey).name}</div>
             </div>
           </div>
-
-          <div className="rounded-2xl p-4" style={{ border: `1px solid ${t.border}` }}>
-            <div className="font-semibold text-lg">Official Results</div>
-            <div className="mt-3 grid grid-cols-2 sm:grid-cols-4 gap-3 text-base">
-              {["first", "second", "third", "fourth"].map((k, idx) => (
-                <div key={k} className="rounded-2xl p-3" style={{ border: `1px solid ${t.border}` }}>
-                  <div className="text-sm" style={{ color: t.muted }}>
-                    {idx + 1}{idx === 0 ? "st" : idx === 1 ? "nd" : idx === 2 ? "rd" : "th"}
-                  </div>
-                  <div className="font-bold text-xl">{results[k] || "-"}</div>
-                </div>
-              ))}
-            </div>
-          </div>
         </div>
       </div>
     );
@@ -1438,7 +1626,9 @@ export default function BettingTerminal() {
   // -----------------
   // Render
   // -----------------
-  if (mode === "TV") return <TvBoard />;
+  if (mode === "TV") {
+    return <TvBoard />;
+  }
 
   return (
     <div className="min-h-screen bg-white">
@@ -1456,10 +1646,10 @@ export default function BettingTerminal() {
           <BettingPanel />
           {mode === "TERMINAL" ? <TerminalBetList /> : null}
           <TerminalControls />
-          <ResultsPanel />
+          {mode === "TERMINAL" ? <ResultsPanel /> : null}
 
           <div className="text-xs text-gray-500 pb-10">
-            Bettor view shows your bets and lets you delete your bets. Terminal can cancel any bet.
+            If a phone cannot select participants: make sure you are in a room (CLOUD mode) and you added participants on Terminal.
           </div>
         </div>
       </div>
